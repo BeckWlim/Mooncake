@@ -1,5 +1,23 @@
 # AGENTS.md
 
+## Technical Writing Style
+
+- Apply these rules to user-facing technical explanations, reviews, reports, design
+  documents, and local notes.
+- Write technical material in a neutral, direct, academic, and engineering-oriented
+  style.
+- Keep observed source facts, derived conclusions, design proposals, and validation
+  items explicitly separated.
+- Prefer declarative descriptions of mechanisms, interfaces, constraints, and effects.
+  Avoid self-referential commentary, defensive disclaimers, rhetorical negation, and
+  repeated caveats.
+- Qualify a statement only when the available evidence is incomplete. State the exact
+  missing evidence and its engineering impact once, then continue with the analysis.
+- Express recommendations through scope, priority, tradeoffs, and acceptance criteria.
+  Do not dramatize risks or frame ordinary engineering uncertainty as self-doubt.
+- Keep terminology stable. Define ambiguous terms once and use the same term for the
+  same concept throughout a document.
+
 ## `docs/` Directory Changes
 
 - Before modifying files under `docs/`, read `docs/AGENTS.md`.

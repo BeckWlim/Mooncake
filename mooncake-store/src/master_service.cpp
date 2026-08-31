@@ -2717,9 +2717,11 @@ auto MasterService::PutStart(const UUID& client_id, const std::string& key,
             std::shared_lock<std::shared_mutex> shared_lock(snapshot_mutex_);
             const size_t lookup_shard_idx =
                 getMetadataShardIndex(object_id.tenant_id, object_id.user_key);
+            // Confirm the lock of SharedMutexLocker lock_;
             MetadataShardAccessorRW shard(this, lookup_shard_idx);
             auto& tenant_state = shard->tenants[object_id.tenant_id];
 
+            // metadata iterator from instance of MetadataShardAccessorRW shard, 
             auto it = tenant_state.metadata.find(key);
             if (it != tenant_state.metadata.end()) {
                 if (CleanupStaleHandles(it->second, alive_clients, &shard)) {
@@ -2730,7 +2732,7 @@ auto MasterService::PutStart(const UUID& client_id, const std::string& key,
                                   QuotaEraseMode::kFull, &shard);
                     it = tenant_state.metadata.end();
                 } else {
-                    auto& metadata = it->second;
+                    auto& metadata = it->second; // ObjectMetadata
                     if (metadata.HasReplica(&Replica::fn_is_completed) ||
                         metadata.put_start_time +
                                 put_start_discard_timeout_sec_ >=
@@ -2740,9 +2742,10 @@ auto MasterService::PutStart(const UUID& client_id, const std::string& key,
                         return tl::make_unexpected(
                             ErrorCode::OBJECT_ALREADY_EXISTS);
                     }
+                    // candidate replicas
                     auto replicas =
                         metadata.PopReplicas(&Replica::fn_is_processing);
-                    if (!replicas.empty()) {
+                    if (!replicas.empty()) { // get candidate replicas success
                         std::lock_guard lock(discarded_replicas_mutex_);
                         discarded_replicas_.emplace_back(
                             std::move(replicas),
@@ -2766,13 +2769,15 @@ auto MasterService::PutStart(const UUID& client_id, const std::string& key,
                         shard->tenants.erase(object_id.tenant_id);
                     }
                 } else {
+                    // Main process
                     return AllocateAndInsertMetadata(
                         shard, client_id, key, slice_length, config, group_id,
                         object_id.tenant_id, now);
                 }
             }
         }
-
+        
+        // condition: target_shard_idx != lookup_shard_idx
         std::shared_lock<std::shared_mutex> shared_lock(snapshot_mutex_);
         MetadataShardAccessorRW shard(this, retry_shard_idx.value());
         auto& retry_tenant_state = shard->tenants[object_id.tenant_id];
@@ -2811,7 +2816,7 @@ auto MasterService::PutEnd(const UUID& client_id, const std::string& key,
                            const TenantId& tenant_id, ReplicaType replica_type)
     -> tl::expected<void, ErrorCode> {
     std::shared_lock<std::shared_mutex> shared_lock(snapshot_mutex_);
-    const auto object_id = MakeObjectIdentityForRequest(key, tenant_id);
+    const auto object_id = MakeObjectIdentityForRequest(key, tenant_id);  //default tenant or explicit tenant
     MetadataAccessorRW accessor(this, object_id);
     if (!accessor.Exists()) {
         LOG(ERROR) << "key=" << key << ", error=object_not_found";
