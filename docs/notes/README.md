@@ -12,6 +12,9 @@
 | `guide/project-overview.local.md` | 仓库概览 | 修正 EP/PG 入口与不存在的测试脚本 | 用于建立目录级认识 |
 | `guide/study-notes.md` | Store、HiCache、TENT 深入笔记 | 修正入口文件和顶层架构图 | 按主题查阅，不建议从头顺读 |
 | `guide/architecture.md` | 推理与缓存概念背景 | 统一主要 ASCII 图，移除图内 Markdown 链接 | 用于理解概念，不作为 API 事实来源 |
+| `pr/3566-ha-promotion-without-oplog.md` | PR #3566：无 OpLog/快照恢复时的 HA promotion | 新增 | 区分 HA、OpLog、snapshot 职责并分析空 `PromotionContext` 修复 |
+| `pr/recent-mooncake-master-main-review-2026-08-31.md` | 近期 Mooncake Master PR 集成审查 | 新增 | 以 public `main` 最新提交为边界，串联 HA、OpLog、snapshot、durability 与 region driver |
+| `pr/master-oom-sglang-l3-pressure-reading-plan.md` | Master OOM 与 SGLang L3 满载 PR 阅读计划 | 新增 | 分离 Master 内存、key 控制面、SSD I/O，并评估 multi-master 演进条件 |
 | `mooncake-store-report.md` | Store 专题快照 | 修正构建开关、目录描述和架构图 | 结合当前源码阅读，避免依赖行数统计 |
 | `tent-transfer-engine-report.md` | TENT 专题快照 | 修正目录拼写和架构图 | 以 `tent/include` 的公开类型为准 |
 | `mooncake-l4-gds-code-reading.md` | Store L4 与 TENT GDS 代码阅读笔记 | 新增 | 沿 offload/Get/promotion 与 FileSegment/cuFile 两条真实调用链阅读 |
@@ -41,6 +44,15 @@
 - 想评估 TENT 当前文件传输能力边界，比较 path scheme、共享 resolver、provider
   transport 与 Store 旁路方案，并规划 descriptor-based DFS/GDS 接入顺序：读
   [TENT descriptor-based DFS 与 GDS 适配报告](tent-descriptor-dfs-gds-adaptation-report.md)。
+- 想理解 HA、OpLog 与 snapshot 的职责边界，以及没有恢复能力时为何 leader
+  无法进入 serving：读
+  [PR #3566 分析](pr/3566-ha-promotion-without-oplog.md)。
+- 想从最新 public `main` 理解近期 Master PR 如何共同约束 serving、恢复、
+  metadata durability 与 region ownership：读
+  [近期 Mooncake Master 集成审查](pr/recent-mooncake-master-main-review-2026-08-31.md)。
+- 想调查 Master 运行期 OOM，以及 SGLang 使用 Mooncake backend 时 L3 满载引发的
+  batch offload 压力，并判断 batching、backpressure 或 multi-master 的适用边界：读
+  [Master OOM 与 SGLang L3 满载 PR 阅读计划](pr/master-oom-sglang-l3-pressure-reading-plan.md)。
 - 想了解近期演进背景：最后读 `dev-focus-2026-q3.md`，不要反过来用热度报告推断调用链。
 
 ## ASCII 图约定

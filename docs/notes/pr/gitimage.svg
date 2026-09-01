@@ -1,0 +1,307 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="1600" height="1180" viewBox="0 0 1600 1180"
+     role="img" aria-labelledby="title description">
+  <title id="title">Mooncake Master OOM and SGLang L3 pressure PR reading graph</title>
+  <description id="description">
+    Two-lane Git and pull-request graph showing merged Master OOM fixes,
+    merged and open SGLang L3 pressure work, the observed community solution
+    tendency, and a numbered reading path.
+  </description>
+
+  <defs>
+    <style>
+      .canvas { fill: #f7f9fc; }
+      .panel { fill: #ffffff; stroke: #d6deea; stroke-width: 1.5; }
+      text { font-family: Inter, Arial, sans-serif; }
+      .panel-title { font-size: 20px; font-weight: 700; fill: #182230; }
+      .header { font-size: 30px; font-weight: 700; fill: #101828; }
+      .subheader { font-size: 15px; font-weight: 400; fill: #475467; }
+      .lane-label { font-size: 15px; font-weight: 700; fill: #344054; }
+      .node-title { font-size: 14px; font-weight: 700; fill: #182230; }
+      .node-text { font-size: 12px; font-weight: 400; fill: #475467; }
+      .node-sha { font-family: monospace; font-size: 11px; font-weight: 600; fill: #344054; }
+      .merged { fill: #ecfdf3; stroke: #12b76a; stroke-width: 2; }
+      .open { fill: #fffaeb; stroke: #f79009; stroke-width: 2; stroke-dasharray: 7 5; }
+      .issue { fill: #f4f3ff; stroke: #7a5af8; stroke-width: 2; }
+      .design { fill: #f2f4f7; stroke: #667085; stroke-width: 2; stroke-dasharray: 8 6; }
+      .edge { fill: none; stroke: #667085; stroke-width: 2.5; }
+      .branch { fill: none; stroke: #98a2b3; stroke-width: 2; stroke-dasharray: 5 5; }
+      .trend-title { font-size: 15px; font-weight: 700; fill: #182230; }
+      .trend-text { font-size: 12px; font-weight: 400; fill: #475467; }
+      .step-number { fill: #175cd3; }
+      .step-digit { font-size: 13px; font-weight: 700; fill: #ffffff; text-anchor: middle; }
+      .step-title { font-size: 14px; font-weight: 700; fill: #182230; }
+      .step-text { font-size: 12px; font-weight: 400; fill: #475467; }
+      .legend { font-size: 12px; font-weight: 500; fill: #475467; }
+      .small-note { font-size: 11px; font-weight: 400; fill: #667085; }
+      a:hover rect { stroke-width: 3; }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#667085"/>
+    </marker>
+    <marker id="arrow-light" markerWidth="10" markerHeight="10" refX="9" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#98a2b3"/>
+    </marker>
+  </defs>
+
+  <rect class="canvas" width="1600" height="1180"/>
+
+  <text class="header" x="32" y="44">Mooncake PR Reading Graph: Master OOM and SGLang L3 Pressure</text>
+  <text class="subheader" x="32" y="70">GitHub state observed 2026-09-01 · merged commits use merge SHA · open PR heads may move</text>
+
+  <rect class="merged" x="1035" y="35" width="22" height="16" rx="4"/>
+  <text class="legend" x="1065" y="48">merged</text>
+  <rect class="open" x="1135" y="35" width="22" height="16" rx="4"/>
+  <text class="legend" x="1165" y="48">open PR</text>
+  <rect class="issue" x="1255" y="35" width="22" height="16" rx="4"/>
+  <text class="legend" x="1285" y="48">issue / RFC</text>
+  <rect class="design" x="1390" y="35" width="22" height="16" rx="4"/>
+  <text class="legend" x="1420" y="48">design inference</text>
+
+  <rect class="panel" x="30" y="95" width="1025" height="270" rx="14"/>
+  <text class="panel-title" x="52" y="128">Lane A · Production Master OOM / RSS</text>
+  <text class="small-note" x="52" y="151">Read causally from incident to mechanism; the horizontal order below follows merge time.</text>
+
+  <line class="edge" x1="143" y1="242" x2="990" y2="242" marker-end="url(#arrow)"/>
+  <circle cx="130" cy="242" r="8" fill="#667085"/>
+  <text class="lane-label" x="52" y="238">main</text>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/pull/3154" target="_blank">
+    <rect class="merged" x="142" y="186" width="158" height="105" rx="10"/>
+    <text class="node-title" x="156" y="208">#3154</text>
+    <text class="node-sha" x="156" y="226">5686c8d</text>
+    <text class="node-text" x="156" y="249">release segment</text>
+    <text class="node-text" x="156" y="266">capacity on teardown</text>
+    <text class="small-note" x="156" y="283">2026-07-28</text>
+  </a>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/pull/3168" target="_blank">
+    <rect class="merged" x="315" y="186" width="158" height="105" rx="10"/>
+    <text class="node-title" x="329" y="208">#3168</text>
+    <text class="node-sha" x="329" y="226">be95961</text>
+    <text class="node-text" x="329" y="249">scope release to</text>
+    <text class="node-text" x="329" y="266">serving Master</text>
+    <text class="small-note" x="329" y="283">2026-07-30</text>
+  </a>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/pull/3118" target="_blank">
+    <rect class="merged" x="488" y="186" width="158" height="105" rx="10"/>
+    <text class="node-title" x="502" y="208">#3118 · key fix</text>
+    <text class="node-sha" x="502" y="226">129a9db</text>
+    <text class="node-text" x="502" y="249">selective BatchEvict</text>
+    <text class="node-text" x="502" y="266">candidate materialization</text>
+    <text class="small-note" x="502" y="283">2026-08-03</text>
+  </a>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/issues/3452" target="_blank">
+    <rect class="issue" x="661" y="176" width="174" height="125" rx="10"/>
+    <text class="node-title" x="675" y="199">Issue #3452</text>
+    <text class="node-text" x="675" y="221">8 GiB Master OOM</text>
+    <text class="node-text" x="675" y="239">40K-token SGLang PD</text>
+    <text class="node-text" x="675" y="257">closed: old eviction</text>
+    <text class="node-text" x="675" y="274">path + HA amplifier</text>
+    <text class="small-note" x="675" y="292">reported 2026-08-15</text>
+  </a>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/pull/3576" target="_blank">
+    <rect class="merged" x="850" y="186" width="158" height="105" rx="10"/>
+    <text class="node-title" x="864" y="208">#3576</text>
+    <text class="node-sha" x="864" y="226">dcedb0b</text>
+    <text class="node-text" x="864" y="249">shrink sparse</text>
+    <text class="node-text" x="864" y="266">metadata maps</text>
+    <text class="small-note" x="864" y="283">2026-08-25</text>
+  </a>
+
+  <path class="branch" d="M748 301 C748 332, 568 332, 568 292" marker-end="url(#arrow-light)"/>
+  <text class="small-note" x="610" y="346">incident confirms #3118 mechanism; #3576 reduces residual bucket high-water memory</text>
+
+  <rect class="panel" x="30" y="385" width="1025" height="375" rx="14"/>
+  <text class="panel-title" x="52" y="418">Lane B · SGLang L3 Full → Metadata, Eviction, and Offload Pressure</text>
+  <text class="small-note" x="52" y="441">Merged foundation above; open community proposals below. A batch RPC is not necessarily end-to-end work coalescing.</text>
+
+  <line class="edge" x1="143" y1="510" x2="990" y2="510" marker-end="url(#arrow)"/>
+  <circle cx="130" cy="510" r="8" fill="#667085"/>
+  <text class="lane-label" x="52" y="506">main</text>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/pull/2508" target="_blank">
+    <rect class="merged" x="142" y="461" width="158" height="96" rx="10"/>
+    <text class="node-title" x="156" y="483">#2508</text>
+    <text class="node-sha" x="156" y="501">3c3b01b</text>
+    <text class="node-text" x="156" y="524">group batch lookup</text>
+    <text class="node-text" x="156" y="541">by in-process shard</text>
+  </a>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/pull/2286" target="_blank">
+    <rect class="merged" x="315" y="461" width="158" height="96" rx="10"/>
+    <text class="node-title" x="329" y="483">#2286</text>
+    <text class="node-sha" x="329" y="501">be1ceba</text>
+    <text class="node-text" x="329" y="524">correct BatchEvict</text>
+    <text class="node-text" x="329" y="541">offload accounting</text>
+  </a>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/pull/2599" target="_blank">
+    <rect class="merged" x="488" y="461" width="158" height="96" rx="10"/>
+    <text class="node-title" x="502" y="483">#2599</text>
+    <text class="node-sha" x="502" y="501">077b696</text>
+    <text class="node-text" x="502" y="524">bound offload queue</text>
+    <text class="node-text" x="502" y="541">and per-cycle work</text>
+  </a>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/pull/2690" target="_blank">
+    <rect class="merged" x="661" y="461" width="158" height="96" rx="10"/>
+    <text class="node-title" x="675" y="483">#2690</text>
+    <text class="node-sha" x="675" y="501">3853f43</text>
+    <text class="node-text" x="675" y="524">bounded promotion</text>
+    <text class="node-text" x="675" y="541">retry / heartbeat</text>
+  </a>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/pull/3589" target="_blank">
+    <rect class="merged" x="834" y="461" width="174" height="96" rx="10"/>
+    <text class="node-title" x="848" y="483">#3589</text>
+    <text class="node-sha" x="848" y="501">3d1665a</text>
+    <text class="node-text" x="848" y="524">key routing separate</text>
+    <text class="node-text" x="848" y="541">from object groups</text>
+  </a>
+
+  <path class="branch" d="M221 557 L221 596 L921 596"/>
+  <line class="branch" x1="221" y1="596" x2="221" y2="615"/>
+  <line class="branch" x1="394" y1="596" x2="394" y2="615"/>
+  <line class="branch" x1="567" y1="596" x2="567" y2="615"/>
+  <line class="branch" x1="740" y1="596" x2="740" y2="615"/>
+  <line class="branch" x1="921" y1="596" x2="921" y2="615"/>
+  <text class="lane-label" x="52" y="646">open</text>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/pull/3014" target="_blank">
+    <rect class="open" x="142" y="615" width="158" height="100" rx="10"/>
+    <text class="node-title" x="156" y="638">#3014</text>
+    <text class="node-sha" x="156" y="656">head acd78e2</text>
+    <text class="node-text" x="156" y="679">observe enqueue</text>
+    <text class="node-text" x="156" y="696">failure</text>
+  </a>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/pull/3226" target="_blank">
+    <rect class="open" x="315" y="615" width="158" height="100" rx="10"/>
+    <text class="node-title" x="329" y="638">#3226</text>
+    <text class="node-sha" x="329" y="656">head c9cb780</text>
+    <text class="node-text" x="329" y="679">parallel bucket</text>
+    <text class="node-text" x="329" y="696">SSD writes</text>
+  </a>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/pull/3643" target="_blank">
+    <rect class="open" x="488" y="615" width="158" height="100" rx="10"/>
+    <text class="node-title" x="502" y="638">#3643</text>
+    <text class="node-sha" x="502" y="656">head c049acc</text>
+    <text class="node-text" x="502" y="679">split metadata and</text>
+    <text class="node-text" x="502" y="696">data latency</text>
+  </a>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/pull/3801" target="_blank">
+    <rect class="open" x="661" y="615" width="158" height="100" rx="10"/>
+    <text class="node-title" x="675" y="638">#3801</text>
+    <text class="node-sha" x="675" y="656">head b837eef</text>
+    <text class="node-text" x="675" y="679">lease-free batch</text>
+    <text class="node-text" x="675" y="696">probe API</text>
+  </a>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/pull/3805" target="_blank">
+    <rect class="open" x="834" y="606" width="174" height="118" rx="10"/>
+    <text class="node-title" x="848" y="629">#3788 / #3805</text>
+    <text class="node-sha" x="848" y="647">heads 3a4d835 / 339e0ba</text>
+    <text class="node-text" x="848" y="670">tenant eviction</text>
+    <text class="node-text" x="848" y="687">headroom and</text>
+    <text class="node-text" x="848" y="704">watermark control</text>
+  </a>
+
+  <rect class="panel" x="30" y="780" width="1025" height="360" rx="14"/>
+  <text class="panel-title" x="52" y="813">Observed Community Solution Tendency</text>
+  <text class="small-note" x="52" y="836">Observed facts are solid boxes. The final dashed branch is an architectural inference, not an accepted upstream plan.</text>
+
+  <rect x="65" y="864" width="275" height="105" rx="12" fill="#eff8ff" stroke="#2e90fa" stroke-width="2"/>
+  <text class="trend-title" x="82" y="890">1 · Keep one authority efficient</text>
+  <text class="trend-text" x="82" y="914">Batch by key/shard, reduce key count,</text>
+  <text class="trend-text" x="82" y="933">bound candidate and queue memory,</text>
+  <text class="trend-text" x="82" y="952">use 1,024 in-process shards.</text>
+
+  <line class="edge" x1="340" y1="916" x2="378" y2="916" marker-end="url(#arrow)"/>
+
+  <rect x="390" y="864" width="275" height="105" rx="12" fill="#f4f3ff" stroke="#7a5af8" stroke-width="2"/>
+  <text class="trend-title" x="407" y="890">2 · Separate pressure signals</text>
+  <text class="trend-text" x="407" y="914">Measure metadata RPC vs data I/O;</text>
+  <text class="trend-text" x="407" y="933">separate probe from read lease;</text>
+  <text class="trend-text" x="407" y="952">make failure and backlog visible.</text>
+
+  <line class="edge" x1="665" y1="916" x2="703" y2="916" marker-end="url(#arrow)"/>
+
+  <rect x="715" y="864" width="305" height="105" rx="12" fill="#ecfdf3" stroke="#12b76a" stroke-width="2"/>
+  <text class="trend-title" x="732" y="890">3 · Improve eviction and holder I/O</text>
+  <text class="trend-text" x="732" y="914">Create eviction headroom, pace work,</text>
+  <text class="trend-text" x="732" y="933">parallelize independent bucket writes,</text>
+  <text class="trend-text" x="732" y="952">preserve partial-failure semantics.</text>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/issues/990" target="_blank">
+    <rect class="issue" x="65" y="1001" width="450" height="100" rx="12"/>
+    <text class="trend-title" x="82" y="1027">Community discussion · Issue #990</text>
+    <text class="trend-text" x="82" y="1051">Current advice: batch operations, reduce physical key granularity,</text>
+    <text class="trend-text" x="82" y="1070">benchmark first, and scale up the single Master when sufficient.</text>
+    <text class="trend-text" x="82" y="1089">The issue closed without a multi-master implementation.</text>
+  </a>
+
+  <a href="https://github.com/kvcache-ai/Mooncake/issues/1035" target="_blank">
+    <rect class="design" x="545" y="991" width="475" height="120" rx="12"/>
+    <text class="trend-title" x="562" y="1017">Conditional trajectory · active Master partitioning</text>
+    <text class="trend-text" x="562" y="1041">Only after metrics prove Master CPU, RPC, locks, or metadata memory</text>
+    <text class="trend-text" x="562" y="1060">remain limiting. No accepted active multi-master PR/RFC was found.</text>
+    <text class="trend-text" x="562" y="1079">V3 roadmap key routing serves Router lookup; it does not specify</text>
+    <text class="trend-text" x="562" y="1098">distributed Master ownership, fencing, recovery, or rebalancing.</text>
+  </a>
+
+  <rect class="panel" x="1080" y="95" width="490" height="1045" rx="14"/>
+  <text class="panel-title" x="1102" y="128">Recommended Reading Path</text>
+  <text class="small-note" x="1102" y="151">Read cause → merged mechanism → open trajectory.</text>
+  <line x1="1125" y1="181" x2="1125" y2="1050" stroke="#d0d5dd" stroke-width="3"/>
+
+  <circle class="step-number" cx="1125" cy="190" r="17"/><text class="step-digit" x="1125" y="195">1</text>
+  <text class="step-title" x="1154" y="185">Frame the production symptom</text>
+  <text class="step-text" x="1154" y="205">Issue #3452: cardinality, eviction RSS, HA.</text>
+
+  <circle class="step-number" cx="1125" cy="285" r="17"/><text class="step-digit" x="1125" y="290">2</text>
+  <text class="step-title" x="1154" y="280">Read the primary OOM fix</text>
+  <text class="step-text" x="1154" y="300">#3118: O(N) census, selective identities, reserve.</text>
+
+  <circle class="step-number" cx="1125" cy="380" r="17"/><text class="step-digit" x="1125" y="385">3</text>
+  <text class="step-title" x="1154" y="375">Read the HA amplifier pair</text>
+  <text class="step-text" x="1154" y="395">#3154 → #3168: capacity gauge ownership.</text>
+
+  <circle class="step-number" cx="1125" cy="475" r="17"/><text class="step-digit" x="1125" y="480">4</text>
+  <text class="step-title" x="1154" y="470">Close residual RSS retention</text>
+  <text class="step-text" x="1154" y="490">#3576: sparse map bucket shrink thresholds.</text>
+
+  <circle class="step-number" cx="1125" cy="570" r="17"/><text class="step-digit" x="1125" y="575">5</text>
+  <text class="step-title" x="1154" y="565">Establish the key lookup baseline</text>
+  <text class="step-text" x="1154" y="585">SGLang adapter notes → #2508 batch lookup.</text>
+
+  <circle class="step-number" cx="1125" cy="665" r="17"/><text class="step-digit" x="1125" y="670">6</text>
+  <text class="step-title" x="1154" y="660">Follow L3 demotion mechanics</text>
+  <text class="step-text" x="1154" y="680">#2286 → #2599 → #2690.</text>
+
+  <circle class="step-number" cx="1125" cy="760" r="17"/><text class="step-digit" x="1125" y="765">7</text>
+  <text class="step-title" x="1154" y="755">Separate bottleneck classes</text>
+  <text class="step-text" x="1154" y="775">#3643 latency phases → #3801 probe semantics.</text>
+
+  <circle class="step-number" cx="1125" cy="855" r="17"/><text class="step-digit" x="1125" y="860">8</text>
+  <text class="step-title" x="1154" y="850">Read the open pressure controls</text>
+  <text class="step-text" x="1154" y="870">#3014, #3226, #3788, and #3805.</text>
+
+  <circle class="step-number" cx="1125" cy="950" r="17"/><text class="step-digit" x="1125" y="955">9</text>
+  <text class="step-title" x="1154" y="945">Evaluate the routing trajectory</text>
+  <text class="step-text" x="1154" y="965">#3589 → issue #990 → V3 roadmap #1035.</text>
+
+  <rect x="1103" y="1010" width="440" height="95" rx="10" fill="#fff6ed" stroke="#fb6514" stroke-width="2"/>
+  <text class="trend-title" x="1120" y="1036">Decision gate</text>
+  <text class="trend-text" x="1120" y="1059">If Master control-plane load dominates after steps 1–8,</text>
+  <text class="trend-text" x="1120" y="1078">prototype static ownership partitioning. If SSD IOPS or</text>
+  <text class="trend-text" x="1120" y="1097">payload bandwidth dominates, multi-master will not fix it.</text>
+</svg>
