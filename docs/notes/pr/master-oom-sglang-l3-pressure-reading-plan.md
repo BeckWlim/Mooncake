@@ -34,7 +34,7 @@ The GitHub review changes the priority of the two workstreams:
 - The available community discussion does not establish active multi-master as the current implementation direction. 
   In [issue #990](https://github.com/kvcache-ai/Mooncake/issues/990), the immediate direction is batching, 
   fewer physical keys, benchmarking, in-process shards, and scaling up the serving Master. 
-  The [V3 roadmap](https://github.com/kvcache-ai/Mooncake/issues/1035) includes key-based routing for a Router lookup service, 
+  The [V3 roadmap #1035](https://github.com/kvcache-ai/Mooncake/issues/1035) includes key-based routing for a Router lookup service, 
   but it does not define partitioned Master ownership, per-partition fencing and recovery, or online rebalancing. 
   Active multi-master therefore remains a conditional design branch rather than an observed upstream commitment.
 
