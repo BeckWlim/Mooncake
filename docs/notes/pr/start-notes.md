@@ -1,11 +1,13 @@
 # Starting Notes: Master OOM and Batch-Eviction Pressure
 
-> - Analysis date: 2026-09-02
+> - Analysis date: 2026-09-03
 > - Production baseline discussed here: Mooncake `v0.3.12.post1`
-> - Local workspace baseline: Git `HEAD` at `d0eb775a`
+> - Local workspace baseline: Git `HEAD` at `427a3a5a`
 > - Inputs: [Master OOM and SGLang L3 pressure reading plan](master-oom-sglang-l3-pressure-reading-plan.md),
->   [issue #952](https://github.com/kvcache-ai/Mooncake/issues/952), and
->   the current and upstream `BatchEvict` implementations
+>   [issue #3452](https://github.com/kvcache-ai/Mooncake/issues/3452),
+>   [issue #952](https://github.com/kvcache-ai/Mooncake/issues/952), the
+>   SGLang Mooncake backend, and the current and upstream `BatchEvict`
+>   implementations
 > - Status: source-backed starting hypotheses; production causality still
 >   requires correlated runtime measurements
 
@@ -25,17 +27,71 @@ The two principles interact, but they address different resource dimensions.
 
 ### Observed source facts
 
-[Issue #3452](https://github.com/kvcache-ai/Mooncake/issues/3452) reports that a
-`v0.3.12.post1` Master gained approximately 7 GiB of RSS within two to three
-hours under a long-context SGLang PD-disaggregated workload. The report states
-that RSS did not fall after the request workload completed.
+[Issue #3452](https://github.com/kvcache-ai/Mooncake/issues/3452) reports that a `v0.3.12.post1` Master gained approximately 7 GiB of RSS
+within two to three hours under a long-context SGLang PD-disaggregated workload.
+The report states that RSS did not fall after the request workload completed.
+
+### SGLang cache pages and Mooncake objects
+
+The reported SGLang configuration uses a 64-token cache page and a fixed
+40,000-token prompt. One request therefore contains approximately 625 logical
+cache pages:
+
+```text
+40,000 tokens / 64 tokens per page = 625 logical pages
+```
+
+SGLang's Mooncake
+[`batch_set_v1`](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py#L1016-L1068)
+path receives logical page keys and host-cache indices. It expands each logical
+key into the component keys required by the model's cache layout, resolves the
+corresponding registered host-memory pointers, checks the component keys with
+Mooncake `batch_is_exist`, and submits only missing components through the
+zero-copy `batch_put_from` path:
+
+```text
+logical cache page
+  -> content-derived logical page key
+  -> one or more layout/rank-specific component keys
+  -> batch_is_exist(component keys)
+  -> batch_put_from(missing keys, host pointers, sizes)
+  -> Mooncake object metadata plus payload placement
+```
+
+A Mooncake object is a distributed-store entry identified by an object key. It
+is not a Python or C++ object in the SGLang process and it is not one complete
+request. The logical-page-to-object multiplier depends on the model layout:
+
+- an MLA page commonly maps to one Mooncake component object;
+- an MHA page commonly maps to separate K and V component objects; and
+- split-head and hybrid layouts can map one page to additional component
+  objects.
+
+The precise source-backed statement is therefore:
+
+> `batch_set_v1` writes one or more Mooncake component objects for every
+> logical cache page whose derived component keys do not already exist.
+
+Random long prompts have limited cross-request prefix reuse, so most derived
+page keys can be new. Request completion does not delete the resulting L3
+cache objects. They remain live until explicit removal or eviction. At 625
+logical pages per request, the reported 20,000-request upper bound can create
+millions of distinct objects after accounting for layout and pipeline/rank
+suffixes.
+
+This mechanism establishes a high-cardinality metadata workload but does not
+alone establish a leak. The discriminating measurement is whether Master RSS
+continues increasing after live object count, allocated payload bytes, and
+eviction throughput have stabilized. Continued object-count growth indicates
+cache population or ineffective eviction; stable live state with increasing
+RSS provides stronger evidence for retained metadata, sparse container
+capacity, allocator retention, or a lifecycle defect.
 
 ### HA process, leadership-term, and service lifetimes
 
-The phrase "a `MasterService` owns a leadership term" is inaccurate. The HA
-supervisor owns and validates the `LeadershipSession`. A `MasterService` is a
-term-scoped serving runtime created only after the supervisor has acquired and
-warmed up that session.
+The HA supervisor owns and validates the `LeadershipSession`.
+A `MasterService` is a term-scoped serving runtime created only after the supervisor has acquired
+and warmed up that session.
 
 The relevant ownership hierarchy is:
 
@@ -59,10 +115,8 @@ Store clients and their memory/SSD segments                  external lifetime
 ```
 
 `WrappedMasterService` contains `MasterService` by value.
-Consequently, destroying the last wrapper reference also runs
-`MasterService::~MasterService` and destroys its `SegmentManager`. The external
-Store clients and their physical segments can remain alive across that
-destruction;
+Consequently, destroying the last wrapper reference also runs `MasterService::~MasterService` and destroys its `SegmentManager`.
+The external Store clients and their physical segments can remain alive across that destruction;
 they discover the new leader and remount their segments into the next serving instance.
 
 The HA serving sequence is:
@@ -88,18 +142,16 @@ leadership loss
   -> destroy the term-scoped WrappedMasterService/MasterService
 ```
 
-The leadership monitor, not `MasterService`, decides when the term is no longer
-valid. By the time `MasterService` is destroyed, the term may already have
-expired or been released. "Term-scoped service" therefore means that the
-service lifetime is bounded by the term; it does not mean that the service owns
-the lease.
+The leadership monitor, not `MasterService`, decides when the term is no longer valid.
+By the time `MasterService` is destroyed, the term may already have expired or been released.
+"Term-scoped service" therefore means that the service lifetime is bounded by the term;
+it does not mean that the service owns the lease.
 
-In non-HA mode, `main` constructs one RPC server and one
-`WrappedMasterService`, registers the wrapper's methods, and keeps both alive
-until process shutdown. There is no in-process destroy/recreate cycle. In HA
-mode, the same ordinary request implementation is used after promotion, but
-the supervisor may repeat service construction and teardown without restarting
-the process:
+In non-HA mode, `main` constructs one RPC server and one `WrappedMasterService`,
+registers the wrapper's methods, and keeps both alive until process shutdown.
+There is no in-process destroy/recreate cycle.
+In HA mode, the same ordinary request implementation is used after promotion,
+but the supervisor may repeat service construction and teardown without restarting the process:
 
 ```text
 client
@@ -110,58 +162,190 @@ client
   -> process-wide MasterMetricManager update
 ```
 
-etcd is outside the service object. With the etcd HA backend it coordinates the
-leader lease and versioned Master view, and it can also hold the ordered OpLog
-that a standby follows. It does not keep the `MasterService` C++ object alive
-and does not store the KV payload. Redis or Kubernetes Lease can replace etcd
-for leadership coordination; the process-versus-term lifetime distinction is
-the same.
+etcd is outside the service object.
+With the etcd HA backend it coordinates the leader lease and versioned Master view,
+and it can also hold the ordered OpLog that a standby follows.
+It does not keep the `MasterService` C++ object alive and does not store the KV payload.
+Redis or Kubernetes Lease can replace etcd for leadership coordination;
+the process-versus-term lifetime distinction is the same.
 
 ### etcd, snapshot, and OpLog recovery model
 
-These mechanisms have separate roles and should not be treated as three names
-for the same replication layer:
+HA coordination, durable recovery, materialized metadata, and physical replica liveness are separate state domains:
 
-| Mechanism | Role in HA | Boundary |
+| Domain | Role | Boundary |
 |---|---|---|
-| etcd | Shared, strongly consistent coordination and key-value service | Publishes the leased Master view and, for the current etcd hot-standby path, stores and notifies changes to the OpLog. Its internal Raft consensus is separate from Mooncake's Master leadership protocol. |
-| Snapshot | Point-in-time checkpoint with a last-included OpLog sequence | Provides a bulk recovery baseline and avoids replaying all historical operations. Snapshot payloads reside in the configured snapshot object store; a catalog publishes their descriptors. |
-| OpLog | Mooncake's ordered application-level journal | Records the supported metadata changes after the snapshot boundary. It contains metadata and replica descriptors, not object payload bytes. |
+| Leadership | Grants one Master authority for a versioned term | The HA backend publishes a leased Master view. Its consensus protocol is separate from Mooncake's leadership state machine. |
+| Snapshot | Supplies a point-in-time metadata baseline at OpLog sequence `S` | Payloads reside in the configured object store; catalog and control records identify valid artifacts. |
+| OpLog | Records ordered application-level metadata mutations after `S` | It contains metadata and replica descriptors, not object payload bytes. |
+| `StandbyMetadataStore` | Materializes snapshot plus OpLog as the current standby projection | It is in-memory, process-local state used for catch-up and promotion export. |
+| Physical storage | Owns memory and SSD payload bytes | Registration, heartbeat, probing, and cleanup report liveness independently from metadata replay. |
 
-The intended standby reconstruction rule is:
+The Store does not call the etcd v3 C++ API directly. Its production call path has four layers:
 
 ```text
-leader coordination:
-  leader supervisor -- leased Master view --> etcd <-- watch -- standby
-
-recoverable metadata:
-  leader MasterService -- checkpoint at sequence S --> snapshot store/catalog
-  leader MasterService -- operations S+1 ... N -----> etcd OpLog
-
-  standby -- load snapshot S --> StandbyMetadataStore
-          -- apply OpLog S+1 ... N --> current standby projection
+Store HA component
+  -> EtcdHaKvBackend or EtcdHelper
+  -> C ABI exported by libetcd_wrapper.so
+  -> Go etcd client/v3
+  -> etcd cluster
 ```
 
-Snapshot and OpLog are complementary. A snapshot without following deltas can
-be stale as soon as the leader accepts another mutation. An OpLog without a
-snapshot can reconstruct state only while all required history remains
-available. The sequence ID joins the two: a snapshot whose
-`last_included_seq = S` must be followed from `S + 1`.
+`EtcdHaKvBackend` is the backend-neutral adapter used by batch OpLog and snapshot-control code.
+It exposes `Get`, `Put`, ordered `Range`, and a compare-and-put transaction.
+Leadership also uses `EtcdHelper` directly for lease grant/revoke, leased create, keepalive,
+and prefix-watch operations that are outside `HaKvBackend`.
+The Go wrapper owns three process-wide clients with separate configurations:
 
-The current `HotStandbyService` does not maintain a complete clone of
-`MasterService`. Its `StandbyMetadataStore` retains this per-object projection:
+| Go client | Consumer | Relevant behavior |
+|---|---|---|
+| `globalClient` | Transfer Engine metadata discovery | Reference-counted and independent from Store HA. |
+| `storeClient` | Store leadership, OpLog, snapshot control, and quota policy | One client per process; ordinary calls use five- or ten-second RPC deadlines. Reset replaces this client and cancels all Store keepalives, maintenance sessions, and watches. |
+| `snapshotClient` | Separate large-value etcd interface; no current C++ caller was found in this inspection | Allows messages up to 2 GB and uses a 60-second timeout. The current catalog-backed snapshot path keeps payloads in its configured object store. |
 
-- object identity/key;
-- owner client UUID;
-- object size;
-- replica descriptors that identify the memory or SSD locations; and
-- the last OpLog sequence ID applied to the key.
+During normal initialization, all Store users of `EtcdHelper` must resolve to the same endpoint string within one process.
+`ConnectToEtcdStoreClient()` is idempotent for that string and returns `INVALID_PARAMS` for a different string after initialization.
+The reset path replaces the endpoint set and cancels all Store keepalives, maintenance sessions, and watches.
+Leadership, batch OpLog, snapshot coordination, and etcd-backed tenant quota policy
+therefore share one Store etcd client even though their higher-level interfaces are separate.
 
-During bootstrap, the standby snapshot provider downloads the segment and
-metadata payloads. It uses a temporary `SegmentManager` to decode replica
-locations, filters zero-size or expired objects, and retains only objects with
-complete, valid replicas. The temporary segment state is not the standby's
-serving `SegmentManager`.
+The principal etcd key spaces are:
+
+| Purpose | Key form | Lifetime/consistency mechanism |
+|---|---|---|
+| Master view | `mooncake-store/<cluster>/master_view` | Attached to the elected leader's lease; its etcd create revision is the `view_version`. |
+| Batch records | `/oplog/<cluster>/batches/<20-digit-batch-id>` | Immutable ordered records created in batches. |
+| Durable OpLog cursor | `/oplog/<cluster>/durable_prefix` | Transactionally advanced with a new batch. |
+| OpLog producer view | `/oplog/<cluster>/producer_view` | Fences the writer against the leadership view. |
+| Snapshot control | `/oplog/<cluster>/snapshot/{maintenance,latest,fallback,compaction_floor}` | Coordinates snapshot publication, fallback, and compaction. Snapshot artifacts themselves use the configured object-store root. |
+
+#### Leadership acquisition and OpLog authority
+
+The etcd backend gives Mooncake two distinct but connected authorities:
+
+1. The leased Master-view key identifies the only process authorized to own
+   the current serving term.
+2. The producer view and durable OpLog prefix identify the only accepted writer
+   and the contiguous mutation history that standby recovery may apply.
+
+Every Master process initially operates as a standby or candidate. The active
+leader keeps the lease attached to the Master-view key alive. After the leader
+fails or loses connectivity long enough for that lease to expire, etcd removes
+the key. Candidates then race to create the absent key with their own lease:
+
+```text
+old leader stops renewing its lease
+  -> etcd expires the lease and removes the Master-view key
+  -> candidates observe the missing view
+  -> each calls TryAcquireLeadership(local address)
+  -> etcd atomically permits one create-with-lease transaction
+  -> one candidate owns the new LeadershipSession and view_version
+  -> all contending candidates remain standbys
+```
+
+Mooncake Master processes do not vote for one another. The winner is the
+candidate whose conditional etcd transaction succeeds, rather than the
+candidate with the lowest replication lag. etcd's own members use Raft to
+provide the consensus behind that transaction, but the internal etcd leader is
+not the Mooncake Master leader.
+
+The `view_version` is the etcd create revision of the leased Master view and
+identifies the leadership term. OpLog publication transactionally compares the
+producer-view value and the expected durable prefix before it creates a batch
+and advances the prefix. These comparisons fence an obsolete Master and
+prevent two producers from independently extending the authoritative history.
+
+Leadership acquisition precedes standby promotion. It does not immediately
+authorize client serving. The winning process must stop ordinary following,
+read the current durable prefix, apply every missing batch, export the stable
+standby projection, restore a fresh `MasterService`, complete warmup and a
+lease-renewal preflight, and only then publish the RPC service. Promotion fails
+with `INCOMPLETE_OPLOG_CATCH_UP` when it cannot prove a complete prefix.
+
+#### Why standby positions differ
+
+All healthy standbys consume the same authoritative OpLog from etcd. They can
+temporarily materialize different prefixes of that log:
+
+```text
+authoritative durable prefix in etcd: sequence 10,000
+standby A applied prefix:             sequence 10,000
+standby B applied prefix:             sequence  9,970
+standby C applied prefix:             sequence  9,100
+```
+
+Different startup times, replay throughput, CPU pressure, snapshot work,
+network interruptions, watch disruption, and process restarts account for the
+different local positions. This is replication lag, not divergent OpLog
+authority. Each standby records its own applied position and reconstructs a
+process-local `StandbyMetadataStore`; etcd retains the common durable batches
+and prefix.
+
+Operational leader identification must distinguish election from serving
+readiness:
+
+| Signal | Meaning |
+|---|---|
+| Master-view key and `view_version` | Candidate that currently owns the etcd leadership lease and its term. |
+| `applied_seq_id` | Last sequence materialized by that standby. |
+| `primary_seq_id` and `lag_entries` | Best-effort durable boundary and the standby's distance from it. |
+| Runtime state `candidate` or `catching_up` | Election or recovery is still in progress. |
+| Runtime state `leader_warmup` | State restoration completed, but serving publication is not complete. |
+| Runtime state `serving` | The elected node completed catch-up, restoration, warmup, and the final lease check. |
+
+The leased Master-view key determines the election winner. The node reporting
+`serving` is the production-ready leader. A candidate can win the lease while
+lagging, but it cannot safely serve until final catch-up reaches the durable
+prefix.
+
+The following diagrams use these symbols:
+
+```text
+H  = HA backend and LeaderCoordinator
+L  = serving leader MasterService
+O  = durable batch OpLog
+S  = snapshot artifacts and catalog
+M  = StandbyMetadataStore plus StandbySegmentRegistry
+P  = physical memory/SSD storage and its liveness signals
+q0 = snapshot boundary; qN = current durable OpLog boundary
+S[q], M[q] = snapshot or materialized state through sequence q
+O(q0,qN] = contiguous OpLog suffix after q0 through qN
+--> = call or data flow;  [lock] = synchronization boundary
+```
+
+The standby lifecycle is:
+
+```text
+time
+ |
+ v
+RunSupervisorLoop()
+ `-- EnterStandbyMode()
+      `-- StandbyController::StartStandby()
+           `-- HotStandbyService::Start()
+                +-- PrepareBootstrapBaselineLocked()
+                |    +-- BatchOpLogSnapshotProvider::RestoreBaseline(): S[q0] -> M[q0]
+                |    `-- RestoreCompleteOpLog(): O(0,q0] -> M[q0] (fallback)
+                |
+                `-- StartOplogFollowingLocked(q0)
+                     `-- ReplicationLoop()
+                          `-- repeat:
+                               OpLogBatchStandbyReader::PollOnce(): O(q0,qN]
+                               -> OpLogApplier::Apply()
+                               -> [metadata write] M[qN]
+
+L -- ordered metadata mutations --------------------------> O
+L -- allocation/write/mount/unmount ----------------------> P
+P -- registration/heartbeat/probe ------------------------> L
+
+Recovery invariant: S[q0] + O(q0,qN] = M[qN].
+```
+
+A snapshot provides the bulk baseline; the OpLog supplies later mutations.
+`M` materializes their result so promotion does not replay all recovery history
+during the outage. It retains object identity, owner, size, replica descriptors,
+and applied sequence, but not payload bytes or the complete `MasterService`
+runtime. Payloads remain in `P`.
 
 After the snapshot boundary, the standby applies only the currently supported
 OpLog mutation set:
@@ -173,38 +357,59 @@ OpLog mutation set:
 | `REMOVE` | Remove the key. |
 | `LEASE_RENEW` | Intentionally not recorded or applied in the current etcd hot-standby design. |
 
-Lease and soft-pin timestamps from a full snapshot are used to reject expired
-objects during bootstrap, but they are not retained in
-`StandbyObjectMetadata`. The standby does not run eviction, and a promoted
-primary is expected to grant fresh leases. The live projection also excludes
-object payload bytes, RPC connections, worker threads, request queues,
-in-flight operations, metrics, eviction timers, and other process-local state.
-The actual bytes remain in the external memory or SSD segments named by the
-replica descriptors.
+Lease and soft-pin timestamps can reject expired snapshot objects but are not
+retained in `StandbyObjectMetadata`. The projection also excludes RPC state,
+workers, queues, in-flight operations, metrics, and eviction timers.
 
-The full snapshot producer serializes richer state, including Master metadata,
-segment-manager state, and task-manager state. The hot-standby snapshot provider
-consumes only the metadata and segment payloads and reduces them to the smaller
-standby projection described above.
+Promotion transfers the stable projection into a fresh serving service:
 
-The current supervisor calls `StandbyController::PromoteStandby()` to stop
-following and perform bounded final OpLog catch-up, then constructs a fresh
-`WrappedMasterService`. In the inspected path, it does not pass
-`HotStandbyService::ExportMetadataSnapshot()` into that new service. The fresh
-`MasterService` performs its separately configured full-snapshot restore.
-Therefore, the following should be treated as a validation requirement rather
-than an established property:
+```text
+old L                 H                  candidate M
+  X-- lease lost ---->|                       |
+                      |<-- TryAcquireLeadership()
+                      |--- LeadershipSession ->|
+                      |                        |
+                      |   PromoteStandbyAndExport()
+                      |   `-- [service mutex]
+                      |        +-- StopReplicationLoop(): stop + join
+                      |        +-- FinalCatchUpForPromotionLocked()
+                      |        |    `-- PollOnce() -> Apply(): O -> M[qN]
+                      |        `-- PromoteAndExportSnapshot()
+                      |             `-- PromotionContext{objects, segments, qN}
+                      |                        |
+                      |   WarmupLeadership()   |
+                      |   StartLeadershipMonitor()
+                      |                        |
+                      |   construct WrappedMasterService
+                      |   `-- RestoreFromStandby(...)
+                      |        `-- [snapshot_mutex_]
+                      |             RestoreFromStandbySnapshot()
+                      |             - validate descriptors and ranges
+                      |             - build metadata shards
+                      |             - mark missing endpoints invalid
+                      |                        |
+                      |   RegisterRpcService() + final renewal preflight
+                      |                        `--> new L accepts RPCs
+```
 
-> The serving `MasterService` created after promotion contains every mutation
-> accepted after the restored snapshot boundary and before leadership transfer.
+The essential consistency boundaries are:
 
-The OpLog also has differentiated durability. `PUT_END` uses an asynchronous,
-lag-tolerant persistence path, while removal operations that can free and reuse
-memory are persisted before returning. Gap recovery and final promotion
-catch-up are bounded and can proceed after warnings. Production HA acceptance
-criteria should consequently specify maximum permitted sequence lag, treatment
-of unresolved gaps, snapshot age, and whether promotion must fail closed when
-the exact recovery boundary cannot be established.
+| Boundary | Mechanism | Guarantee |
+|---|---|---|
+| `L -> O` publication | Producer-view and durable-prefix transaction | Fenced writer and contiguous durable prefix. |
+| `O -> M` replay/export | Stop/join replay thread and service mutex | Stable `{objects, segments, sequence}` handoff. |
+| `M -> L` restore | `snapshot_mutex_` and shard synchronization | Validated metadata installed before RPC exposure. |
+| `P -> L` liveness | Registration, heartbeat, probe, and cleanup | Current physical replica usability. |
+
+No mutex or transaction spans logical metadata and physical payload storage. A
+replica descriptor may be consistent with durable OpLog sequence `N` while its
+storage endpoint is unavailable. Promotion establishes logical consistency;
+post-restore liveness mechanisms establish current physical usability.
+
+The OpLog has differentiated durability: `PUT_END` is asynchronous and
+lag-tolerant, while removals that permit memory reuse are persisted before
+return. Acceptance tests must correlate the old leader's last acknowledged
+mutation with the promoted sequence, object set, and usable replica set.
 
 ### Capacity-accounting leak across leadership terms
 
