@@ -6,6 +6,7 @@
 #include "common.h"
 #include "config.h"
 #include "real_client.h"
+#include "version.h"
 
 using namespace mooncake;
 
@@ -47,6 +48,14 @@ void RegisterClientRpcService(coro_rpc::coro_rpc_server &server,
         &real_client);
     server.register_handler<
         &RealClient::batch_put_from_multi_buffers_dummy_helper>(&real_client);
+    server.register_handler<&RealClient::batch_put_from_cuda_ipc_dummy_helper>(
+        &real_client);
+    server
+        .register_handler<&RealClient::batch_upsert_from_cuda_ipc_dummy_helper>(
+            &real_client);
+    server.register_handler<
+        &RealClient::batch_upsert_from_multi_buffers_dummy_helper>(
+        &real_client);
     server.register_handler<&RealClient::upsert_dummy_helper>(&real_client);
     server.register_handler<&RealClient::upsert_from_dummy_helper>(
         &real_client);
@@ -60,6 +69,8 @@ void RegisterClientRpcService(coro_rpc::coro_rpc_server &server,
         &real_client);
     server.register_handler<
         &RealClient::batch_get_into_multi_buffers_dummy_helper>(&real_client);
+    server.register_handler<&RealClient::batch_get_into_cuda_ipc_dummy_helper>(
+        &real_client);
     server.register_handler<&RealClient::get_into_range_shm_helper>(
         &real_client);
     server.register_handler<&RealClient::get_into_ranges_shm_helper>(
@@ -83,6 +94,7 @@ void RegisterClientRpcService(coro_rpc::coro_rpc_server &server,
     server.register_handler<&RealClient::release_buffer_dummy>(&real_client);
     server.register_handler<&RealClient::batch_acquire_buffer_dummy>(
         &real_client);
+    server.register_handler<&RealClient::allocate_buffer_dummy>(&real_client);
     server.register_handler<&RealClient::create_copy_task>(&real_client);
     server.register_handler<&RealClient::create_move_task>(&real_client);
     server.register_handler<&RealClient::query_task>(&real_client);
@@ -99,10 +111,14 @@ int main(int argc, char *argv[]) {
     // spawning threads, leading to missing signal processing.
     mooncake::ResourceTracker::getInstance();
 
+    gflags::SetVersionString(mooncake::MOONCAKE_DISPLAY_VERSION);
     gflags::ParseCommandLineFlags(&argc, &argv, true);
     if (!FLAGS_log_dir.empty()) {
         google::InitGoogleLogging(argv[0]);
     }
+
+    LOG(INFO) << "Mooncake real client version: "
+              << mooncake::MOONCAKE_DISPLAY_VERSION;
 
     size_t global_segment_size = string_to_byte_size(FLAGS_global_segment_size);
     size_t local_buffer_size = string_to_byte_size(FLAGS_local_buffer_size);
