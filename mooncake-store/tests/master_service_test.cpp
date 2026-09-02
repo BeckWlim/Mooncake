@@ -820,6 +820,28 @@ TEST_F(MasterServiceTest, GroupRoutingIsTenantScopedForSameUserKey) {
     EXPECT_TRUE(service_->GetReplicaList(key, tenant_b).has_value());
 }
 
+TEST_F(MasterServiceTest, StandbySnapshotRestorePreservesTenantScopedKeys) {
+    const TenantId tenant_a("tenant_restore_a");
+    const TenantId tenant_b("tenant_restore_b");
+    MasterService service(
+        MakeStrictTenantConfig({tenant_a.value(), tenant_b.value()}));
+    const std::string key = "shared_restore_key";
+
+    Replica replica(generate_uuid(), 128, "local://standby",
+                    ReplicaStatus::COMPLETE);
+    StandbyObjectMetadata metadata;
+    metadata.client_id = generate_uuid();
+    metadata.size = 128;
+    metadata.replicas.push_back(replica.get_descriptor());
+
+    service.RestoreFromStandbySnapshot({{tenant_a.value(), key, metadata}},
+                                       /*initial_oplog_sequence_id=*/0, {});
+
+    EXPECT_TRUE(service.ExistKey(key, tenant_a).value_or(false));
+    EXPECT_FALSE(service.ExistKey(key, tenant_b).value_or(true));
+    EXPECT_FALSE(service.ExistKey(key, TenantId::Default()).value_or(true));
+}
+
 TEST_F(MasterServiceTest, BatchGetReplicaListPreservesOrderWithGroupedKeys) {
     std::unique_ptr<MasterService> service_(new MasterService());
     [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
@@ -4068,6 +4090,43 @@ TEST_F(MasterServiceTest, ReadableAfterPartialUnmountWithReplication) {
     auto get_after_unmount = service_->GetReplicaList(key, TenantId::Default());
     ASSERT_TRUE(get_after_unmount.has_value())
         << "Object should remain accessible with surviving replica";
+}
+
+TEST_F(MasterServiceTest, PutStartPartialAllocationIsObservable) {
+    std::unique_ptr<MasterService> service_(new MasterService());
+
+    // Mount two segments only
+    constexpr size_t buffer1 = 0x300000000;
+    constexpr size_t buffer2 = 0x400000000;
+    constexpr size_t segment_size = 1024 * 1024 * 64;  // 64MB
+
+    auto segment1 = MakeSegment("segment1", buffer1, segment_size);
+    auto segment2 = MakeSegment("segment2", buffer2, segment_size);
+    UUID client_id = generate_uuid();
+    ASSERT_TRUE(service_->MountSegment(segment1, client_id).has_value());
+    ASSERT_TRUE(service_->MountSegment(segment2, client_id).has_value());
+
+    auto& metrics = MasterMetricManager::instance();
+    const int64_t partial_before = metrics.get_put_start_partial_allocations();
+
+    // Request more replicas than available segments: best-effort keeps the
+    // put successful but the degradation must be recorded.
+    ReplicateConfig config;
+    config.replica_num = 3;
+    auto put_start_result = service_->PutStart(
+        client_id, "partial_alloc_key", TenantId::Default(), 1024, config);
+    ASSERT_TRUE(put_start_result.has_value());
+    ASSERT_EQ(2u, put_start_result->size());
+    ASSERT_EQ(metrics.get_put_start_partial_allocations(), partial_before + 1);
+
+    // A fully satisfied allocation must not be counted as partial.
+    ReplicateConfig full_config;
+    full_config.replica_num = 2;
+    auto full_result = service_->PutStart(
+        client_id, "full_alloc_key", TenantId::Default(), 1024, full_config);
+    ASSERT_TRUE(full_result.has_value());
+    ASSERT_EQ(2u, full_result->size());
+    ASSERT_EQ(metrics.get_put_start_partial_allocations(), partial_before + 1);
 }
 
 TEST_F(MasterServiceTest, UnmountSegmentPerformance) {
