@@ -559,19 +559,14 @@ This yields two metric-lifetime rules for future HA changes:
 
 ### BatchEvict transient amplification
 
-At this production baseline, `MasterService::BatchEvict` performs a complete
-metadata census and constructs a full candidate containing the tenant, key,
-shard, and lease timestamp for every eligible object before selecting the
-requested subset. The temporary candidate population is therefore
-`O(eligible object count)`, even when the configured eviction ratio is small.
-This creates a transient Master-memory and allocation peak at the same time as
-the system is already under capacity pressure.
+At this production baseline, `MasterService::BatchEvict` performs a complete metadata census 
+and constructs a full candidate containing the tenant, key, shard, and lease timestamp for every eligible object before selecting the requested subset. 
+The temporary candidate population is therefore `O(eligible object count)`, even when the configured eviction ratio is small.
+This creates a transient Master-memory and allocation peak at the same time as the system is already under capacity pressure.
 
-Merged [PR #3118](https://github.com/kvcache-ai/Mooncake/pull/3118), which is
-newer than the production baseline, reduces identity materialization for low
-eviction ratios by first collecting lease timestamps and then materializing a
-bounded eviction frontier. Its published measurements report the following
-results for one million eligible objects:
+Merged [PR #3118](https://github.com/kvcache-ai/Mooncake/pull/3118), which is newer than the production baseline, 
+reduces identity materialization for low eviction ratios by first collecting lease timestamps and then materializing a bounded eviction frontier. 
+Its published measurements report the following results for one million eligible objects:
 
 | Eviction ratio | Baseline candidates | PR #3118 candidates | Reported runtime effect |
 |---:|---:|---:|---:|
@@ -579,10 +574,9 @@ results for one million eligible objects:
 | 10% | 1,000,000 | 110,000 | approximately 47% lower median runtime |
 | 30% | 1,000,000 | 1,000,000 | no detected improvement |
 
-The 30% case deliberately uses the full-materialization path because most of
-the eligible population is near the requested frontier. This result directly
-connects eviction granularity to the Master peak: a high eviction ratio removes
-the benefit of selective candidate materialization.
+The 30% case deliberately uses the full-materialization path because most of the eligible population is near the requested frontier. 
+This result directly connects eviction granularity to the Master peak: 
+a high eviction ratio removes the benefit of selective candidate materialization.
 
 The upstream fixes narrow several concrete OOM amplifiers:
 
@@ -709,10 +703,9 @@ over-evict many small, reusable KV objects.
 
 ### Current memory-eviction mechanism
 
-Distributed-DRAM eviction has its own policy path. The Master invokes
-`BatchEvict` when global distributed-memory utilization crosses the high
-watermark or a memory allocation failure sets `need_mem_eviction_`. The
-production baseline uses these defaults:
+Distributed-DRAM eviction has its own policy path. 
+The Master invokes `BatchEvict` when global distributed-memory utilization crosses the high watermark or a memory allocation failure sets `need_mem_eviction_`. 
+The production baseline uses these defaults:
 
 - high-watermark trigger: 90% global distributed-memory usage;
 - base eviction ratio: 5% of the eviction-base object count;
@@ -726,12 +719,11 @@ target object ratio = max(R, U - H + R)
 lower bound         = max(target / 2, U - H)
 ```
 
-The target combines the watermark excess with configured headroom. Under a
-proportional relationship between object count and allocated bytes, the full
-target moves usage from `U` to approximately `H - R`. An allocation-failure
-cycle below the watermark uses `R` as its target. The lower bound supplies the
-second-pass objective: at least half the target and at least the watermark
-excess.
+The target combines the watermark excess with configured headroom. 
+Under a proportional relationship between object count and allocated bytes, 
+the full target moves usage from `U` to approximately `H - R`. 
+An allocation-failure cycle below the watermark uses `R` as its target. 
+The lower bound supplies the second-pass objective: at least half the target and at least the watermark excess.
 
 For `U = 93%`, `H = 90%`, and `R = 5%`:
 
@@ -740,9 +732,8 @@ target      = 93% - 90% + 5% = 8%
 lower bound = max(4%, 3%)     = 4%
 ```
 
-`BatchEvict` builds thresholds, candidates, group expansion, and final mutation
-decisions incrementally. The two lifelines show the asynchronous
-foreground/thread boundary; synchronous internals use an ordinary call chain.
+`BatchEvict` builds thresholds, candidates, group expansion, and final mutation decisions incrementally. 
+The two lifelines show the asynchronous foreground/thread boundary; synchronous internals use an ordinary call chain.
 
 ```text
 Legend:  ----> call/action    --?-> check    <---- result
@@ -801,9 +792,106 @@ and it has at least one complete, readable DRAM replica with `refcnt == 0`.
 Lease expiry and soft-pin policy then determine candidate membership.
 An object with several reclaimable replicas still contributes one unit.
 
-For low target ratios in `v0.3.13` and later, Mooncake materializes full tenant/key identities
-for a bounded frontier around the oldest deadline cutoff.
-The frontier is an ephemeral work list whose lifetime matches the current invocation.
+#### Selective frontier and high-ratio prebypass
+
+The selective-frontier mechanism entered `main` on 2026-08-03 through
+[PR #3118](https://github.com/kvcache-ai/Mooncake/pull/3118), merge commit
+[`129a9db9579c`](https://github.com/kvcache-ai/Mooncake/commit/129a9db9579c9112728aa48542d92a2bbbbe53ec).
+Its history separates three related concerns:
+
+- [issue #2560](https://github.com/kvcache-ai/Mooncake/issues/2560), opened
+  2026-06-22, measured the complete metadata scan and its
+  `snapshot_mutex_` hold time at one million objects;
+- [RFC #3124](https://github.com/kvcache-ai/Mooncake/issues/3124), opened
+  2026-07-26, specifies selective identity materialization, reserve,
+  revalidation, refill, and high-ratio bypass; and
+- [issue #3452](https://github.com/kvcache-ai/Mooncake/issues/3452), opened
+  later on 2026-08-15, reports production Master RSS growth. The old
+  full-candidate allocation is relevant to that report as a transient peak,
+  but #3452 was not the originating issue for PR #3118.
+
+The parallel census maintains distinct per-worker results. They must not be
+interpreted as different representations of one container:
+
+| Name | Type of information | Later use |
+|---|---|---|
+| `local_eviction_base[t]` | Scalar object count for worker `t` | Summed into `total_eviction_base`, the denominator of the target ratio |
+| `local_candidates[t]` | Full `{shard, tenant, key, deadline}` identities | Used directly by the high-ratio path |
+| `local_no_pin[t]` | Deadlines only | Used to choose the low-ratio frontier cutoff |
+| `local_soft_pin[t]` | Deadlines of eligible soft-pinned objects | Used only by lower-bound fallback when soft-pin eviction is enabled |
+| `candidates` | Flat full-identity work list | Sorted and revalidated by the serial first pass |
+
+For each non-hard-pinned object, the census first tests whether any DRAM
+replica is reclaimable. A successful test increments the eviction base before
+lease and soft-pin filtering. An expired object then follows this decision
+tree:
+
+```text
+expired and has a reclaimable DRAM replica
+  -> no active soft pin
+       -> compact_frontier_prebypass == true
+            -> store full identity in local_candidates[t]
+       -> compact_frontier_prebypass == false
+            -> store only the deadline in local_no_pin[t]
+  -> active soft pin and soft-pin eviction enabled
+       -> store only the deadline in local_soft_pin[t]
+  -> active soft pin and soft-pin eviction disabled
+       -> do not add an execution candidate
+```
+
+`compact_frontier_prebypass == true` means that the compact frontier is
+bypassed, rather than enabled. The threshold follows from the configured
+frontier geometry:
+
+```text
+reserve slack             ~= primary candidate count / 10
+reserved frontier         ~= primary candidate count * 11 / 10
+compact-frontier limit    ~= no-soft-pin population / 4
+prebypass target ratio     = 10 / (4 * 11)
+                           = 5 / 22
+                           ~= 22.73%
+```
+
+At or above 22.73%, the nominal target plus 10% reserve would already approach
+or exceed the 25% frontier limit. The census therefore materializes complete
+identities immediately and avoids paying for another metadata traversal. This
+is an early ratio-based decision. On the low-ratio path, the later exact
+`reserve_count <= frontier_limit` check still accounts for the observed
+no-soft-pin population and the minimum slack and frontier constants.
+
+Below the prebypass threshold, the census retains only deadlines. After it
+computes
+
+```text
+ideal_evict_num = ceil(total_eviction_base * evict_ratio_target)
+```
+
+it applies `nth_element` to locate the oldest requested range plus reserve.
+`collect_candidates()` then rescans the shards and materializes full identities
+only at or before that deadline cutoff. The extra O(N) traversal exchanges CPU
+and shard-lock acquisitions for a reduction from O(N) full identities toward
+O(K + reserve), where K is the requested candidate count. If concurrent
+metadata changes shrink the selected range, the shortfall guard collects the
+full current set; if execution consumes the reserve, a refill scan collects
+entries after the original cutoff.
+
+On the prebypass path, each census worker writes to its own
+`local_candidates[t]`, avoiding synchronization on one shared vector. After
+the workers join, Mooncake sums the vector sizes into a local `total`, calls
+`candidates.reserve(total)` once, and move-inserts each worker range at
+`candidates.end()`. `reserve` allocates capacity without changing vector size;
+the range inserts construct the elements and flatten the per-worker vectors.
+This `total` is a storage-capacity calculation and is unrelated to
+`total_eviction_base`.
+
+The frontier is an ephemeral work list whose lifetime matches the current
+invocation. The memory-utilization trigger is byte-derived, but the initial
+execution target is an object count. Actual reclaimed bytes are accumulated as
+`metadata.size * evicted_replica_count`; varying object sizes and replica counts
+therefore make byte reclamation differ from the target object ratio. The next
+eviction-thread wake supplies the byte-level feedback by sampling utilization
+again.
+
 Each candidate receives a fresh lookup and revalidation immediately before mutation.
 A concurrent read can extend its lease beyond the captured `now` and move it out of the current execution set.
 A lease that expires after the captured value enters eligibility in a later invocation.

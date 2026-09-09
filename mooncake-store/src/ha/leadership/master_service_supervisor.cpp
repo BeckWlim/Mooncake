@@ -277,12 +277,14 @@ int RunSupervisorLoop(const HABackendSpec& spec,
                     }
                     break;
                 }
-
+                
+                // A leader was observed during acquisition
                 if (acquire->observed_view.has_value()) {
                     UpdateObservedLeader(admin_server, *standby_controller,
                                          acquire->observed_view);
                 }
-
+                
+                // Master acquired leadership
                 if (acquire->status == AcquireLeadershipStatus::ACQUIRED &&
                     acquire->session.has_value()) {
                     leadership_session = *acquire->session;
