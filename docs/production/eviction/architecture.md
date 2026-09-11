@@ -441,6 +441,106 @@ The source structure implies the following behavior:
 - `BatchEvict` reports HA eviction progress when removals are accepted into the OpLog path; 
   immediately reusable capacity depends on durable callback progress.
 
+## Possible mutex race between `BatchEvict` and `BatchExistKey`
+
+`BatchEvict` and `BatchExistKey` both acquire `snapshot_mutex_` in shared mode, 
+so this mutex does not normally serialize the two operations. 
+Their metadata-shard access does conflict:
+
+- the `BatchEvict` census, candidate recollection, candidate mutation, and
+  map-shrink paths acquire each affected shard exclusively;
+- `BatchExistKey` partitions its keys by shard and acquires each involved
+  shard in shared mode, one shard at a time.
+
+Consequently, `BatchExistKey` waits when `BatchEvict` holds one of its target shards. 
+Shards not currently held by eviction remain available. 
+A batch that covers multiple shards can encounter more than one such wait.
+
+For a particular expired object, three orderings are possible:
+
+```text
+BatchExistKey reads first
+  -> observes a readable replica and renews its read lease
+  -> eviction revalidation observes the renewed lease and skips the key
+
+BatchEvict records a candidate first, but BatchExistKey reads before application
+  -> BatchExistKey renews the read lease
+  -> candidate application revalidates and skips the stale candidate
+
+BatchEvict applies the candidate first
+  -> removes or marks the eligible replica under the exclusive shard lock
+  -> BatchExistKey subsequently observes a surviving readable replica or false
+```
+
+This is a semantic race over which operation takes effect first, not an unsafe
+data race. The shard mutex prevents `BatchExistKey` from observing a partially
+mutated metadata entry. Candidate census is advisory; final eligibility is
+determined by a fresh lookup and revalidation under the exclusive shard lock.
+
+A successful `BatchExistKey` also affects eviction policy because it renews
+the object's read lease even though the API returns only an existence result.
+The check can therefore protect an expired candidate from the current
+eviction cycle.
+
+The complete batch is not an atomic snapshot across shards. `BatchExistKey`
+releases one shard before acquiring the next while `BatchEvict` can continue
+on other shards. One response may therefore contain per-key results established
+at different times, while every individual result remains consistent with its
+shard state while the shared shard lock was held.
+
+### Consequence for SGLang L3 prefetch
+
+SGLang HiCache performs L3 prefetch in two steps. Its prefetch query calls the
+Mooncake backend's `batch_exists`, which maps to
+`MooncakeDistributedStore.batch_is_exist` and then to `BatchExistKey`. After
+selecting the continuous L3 prefix, a separate prefetch I/O stage calls the
+batch-get interface, which queries readable replica descriptors and transfers
+the data into L2 host memory.
+
+```text
+SGLang prefetch query
+  -> batch_exists
+    -> Mooncake batch_is_exist / BatchExistKey
+  -> select the continuous L3 prefix
+  -> allocate destination L2 pages
+  -> batch_get
+    -> Mooncake BatchGetReplicaList
+    -> transfer the selected replicas
+```
+
+This creates a check/use interval between `BatchExistKey` and the actual read.
+Under normal timing, the interval is protected by Mooncake's lease behavior:
+each successful existence result renews the object's read lease, and
+`BatchEvict` revalidates that lease before applying a previously collected
+candidate. A candidate collected before the existence query is therefore
+skipped when its application occurs after the lease renewal.
+
+The remaining outcomes are bounded:
+
+- If eviction completes before the existence query, SGLang observes a miss and
+  stops the continuous L3 prefix at that page.
+- If the existence query completes first, its renewed lease normally protects
+  the page until the batch read performs another metadata query and renews the
+  lease again.
+- If prefetch is delayed beyond the lease interval, a later eviction can remove
+  the page between the two steps. The batch read must then treat its actual
+  result, rather than the earlier existence result, as authoritative and use
+  only the successfully restored continuous prefix.
+
+For tensor-parallel execution, different ranks can observe different prefix
+lengths because their keys and query timing differ. SGLang reduces the reported
+hit length to the minimum across participating ranks before scheduling the
+read, so all ranks use a common prefix. This synchronization limits the usable
+prefix but does not make the preceding Mooncake batch queries atomic.
+
+Shard contention affects latency independently of the check/use ordering.
+Both the existence query and the later replica query can wait for an exclusive
+`BatchEvict` critical section on a target shard. With `wait_complete`, this
+delay is on the TTFT critical path. With `timeout` or `best_effort`, the direct
+wait is bounded by the prefetch policy, but fewer pages may complete in time
+and the request performs more prompt recomputation. These are service-latency
+effects of valid serialized outcomes, not evidence of index corruption.
+
 ## Validation anchors
 
 The most relevant focused tests are:
