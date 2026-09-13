@@ -74,10 +74,12 @@ wait as well as payload transfer. See
 | E5 | Candidate application performs fresh lookup and revalidation under an exclusive shard lock and continues toward the target. | Revalidation creates further collision intervals. |
 | E6 | Sparse maps for affected shards are shrunk under exclusive access before the cycle completes. | The final exclusive intervals occur here. |
 
-The census covers 1,024 shards through at most 16 workers. Each worker holds one
-shard at a time, so the mechanism is shard-selective rather than a simultaneous
-exclusive lock over all shards. Candidate application later reacquires
-individual shard locks. Source locations include
+The census covers 1,024 shards through at most 16 workers. Each worker acquires
+one shard mutex, scans that shard, and releases the mutex at the end of the loop
+iteration before visiting the next shard. After the workers join, no census
+shard mutex remains held. Frontier scans, candidate application, and sparse-map
+shrink later acquire separate per-shard critical sections. Source locations
+include
 [`master_service.h`](../../../mooncake-store/include/master_service.h#L1656),
 [`BatchGetReplicaList`](../../../mooncake-store/src/master_service.cpp#L3879),
 [`EvictionThreadFunc`](../../../mooncake-store/src/master_service.cpp#L9114),

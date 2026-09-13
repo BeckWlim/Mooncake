@@ -1016,10 +1016,10 @@ def plot_request_chain_and_contention() -> None:
     eviction_stages = (
         (1.0, "E1  Memory pressure\n10 ms trigger loop"),
         (3.0, "E2  BatchEvict starts\nshared snapshot lock held"),
-        (5.0, "E3  Candidate census\n16 workers; all 1,024 shards"),
-        (7.0, "E4  Optional frontier\nmaterialization / refill scan"),
-        (9.0, "E5  Serial candidate apply\nrevalidate and continue to target"),
-        (11.0, "E6  Shrink affected shards\nmetrics update; cycle ends"),
+        (5.0, "E3  Candidate census\nper shard: lock, scan, release"),
+        (7.0, "E4  Optional frontier / refill\nnew per-shard lock intervals"),
+        (9.0, "E5  Serial candidate apply\nfresh lookup, lock, revalidate"),
+        (11.0, "E6  Shrink affected shards\nper-shard lock; cycle ends"),
     )
 
     axis.text(
@@ -1057,9 +1057,9 @@ def plot_request_chain_and_contention() -> None:
         draw_process_arrow(axis, (left_x + 0.72, 2.35), (right_x - 0.72, 2.35))
 
     axis.annotate(
-        "same-shard lock competition",
-        xy=(7.0, 6.85),
-        xytext=(7.0, 3.1),
+        "representative E3\nsame-shard collision",
+        xy=(6.65, 6.85),
+        xytext=(5.15, 3.1),
         ha="center",
         va="bottom",
         fontsize=8.5,
@@ -1071,19 +1071,35 @@ def plot_request_chain_and_contention() -> None:
         },
     )
     axis.text(
-        6.0,
+        8.9,
         5.15,
-        "E3–E6 repeatedly acquire exclusive shard locks;\n"
-        "S4 waits when its occupied shard overlaps one of those intervals.",
+        "Separate shard-lock critical sections\n"
+        "E3: lock one shard → scan → release; repeat.\n"
+        "E4–E6 reacquire only the shard being processed.",
         ha="center",
         va="center",
-        fontsize=9,
+        fontsize=8.7,
         color="#303030",
         bbox={
             "boxstyle": "round,pad=0.45",
             "facecolor": "white",
             "edgecolor": "#9CA3AF",
             "linewidth": 0.9,
+        },
+    )
+    axis.text(
+        6.0,
+        1.48,
+        "worker join\nall census shard locks released",
+        ha="center",
+        va="center",
+        fontsize=7.6,
+        color="#4B5563",
+        bbox={
+            "boxstyle": "round,pad=0.3",
+            "facecolor": "#F3F4F6",
+            "edgecolor": "#9CA3AF",
+            "linewidth": 0.8,
         },
     )
 
@@ -1111,7 +1127,8 @@ def plot_request_chain_and_contention() -> None:
         6.0,
         0.55,
         "Snapshot lock: shared for the full cycle and compatible with the read path.  "
-        "Shard lock: exclusive only while each shard or candidate is processed; up to 16 distinct shards during census.",
+        "Census: up to 16 workers scan all 1,024 shards, holding at most one shard lock each; "
+        "later phases acquire separate shard locks.",
         ha="center",
         va="center",
         fontsize=8.4,

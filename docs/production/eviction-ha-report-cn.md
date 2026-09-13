@@ -12,14 +12,13 @@
 > **当前结论：`v0.3.13.post1` 已包含主要 Eviction 正确性与性能优化。在高压压测区间内，
 > 现有数据没有显示 `BatchEvict` 与 KV 传输时延或 TTFT 存在明显相关性，也没有建立二者的
 > 因果关系。**
->
-> 同 shard 锁竞争作为局部机制继续监控，当前生产策略与版本基线可以保持。
+
 
 | 议题 | 结论 | 关键成本证据 | 当前版本判断 |
 |---|---|---|---|
 | 生产状态 | 高压压测区间内，没有证据表明 `BatchEvict` 与 KV-transfer 或 TTFT 呈现明显相关或因果关系。 | 同一高压区间的 1,201 个样本中，六项零位移相关系数满足 `abs(r) ≤ 0.035`，对应的 95% 置信区间均覆盖零值。 | 保持 `v0.3.13.post1` 和当前 Eviction 策略；使用 request-shard 计时量化局部锁等待。 |
 | 前台锁竞争：#2405 / #2508 | 优化目标是缩短 latency-critical lookup 与 eviction 的竞争窗口。#2508 将 `BatchGetReplicaList` 的锁 acquisition 从 O(`K_batch`) 收敛到 O(`S_occupied`)。 | #2405 benchmark 的 average/p99 从 991.5/2,910.7 ms 降至 106.4/296.1 ms，分别降低 89.3%/89.8%；#2508 的 p99/max 分别降低 31.1%/30.9%。 | 两项均已进入生产基线；同 shard 读写串行化继续作为正确性边界。 |
-| Issue #2560 | Issue 确认 O(N) candidate scan、整周期 `snapshot_mutex_` 共享锁和高比例场景的 Phase 2 成本。它描述结构性规模边界，不构成生产 TTFT 回归证据。 | 初始 `约 1.0 s` 与后续 `约 1.5 s` 来自不同硬件、commit 和 instrumentation，不能作为 A/B；后续 profile 中 Phase 1 为 2.3%，Phase 2 为 82.2%。 | 高比例场景的后续优化重点是 Phase 2 和快照锁周期；生产优先级由实测 `T_shard_wait(s)` 决定。 |
+| Issue #2560 | Issue 确认 O(N) candidate scan、整周期 `snapshot_mutex_` 共享锁和高比例场景的 Phase 2 成本。 | 初始 `约 1.0 s` 与后续 `约 1.5 s` 来自不同硬件、commit 和 instrumentation， 不作为直接对比；后续 profile 中 Phase 1 为 2.3%，Phase 2 为 82.2%。 | 高比例场景的后续优化重点是 Phase 2 和快照锁周期；生产优先级由实测 `T_shard_wait(s)` 决定。 |
 | PR #2286 | 这是淘汰语义修正与 Phase 1 并行化的正向优化。跨环境的 `1.0 s`/`1.5 s` 不用于评价该 PR。 | SSD workload 的 target population 从 85,622,691 收敛到 3,776,944，5% victim target 从 4,310,991 降到约 190,165；同 workload 的 `T_eviction_cycle` 从约 80 s 降到 2.3 s，降低 97.1%。 | 已进入生产基线；避免 SSD 场景过度淘汰，并显著降低对应周期成本。 |
 | PR #3118 | 低比例路径以第二次 scan 换取更小的完整 candidate 集合，收益集中在低 target。 | 1% target：288.1 → 88.3 ms，降低 69.9%；10%：529.7 → 285.1 ms，降低 47.1%；30% 位于等价区间。 | 已进入生产基线；低比例场景直接受益，O(N) census 和整周期快照共享锁仍是保留边界。 |
 
@@ -43,6 +42,12 @@ SGLang 的 Mooncake 读取包括 metadata 查询、replica 选择和 payload 传
 KV 传输又只占 TTFT 的一部分。
 
 ![SGLang–Mooncake 请求路径与 BatchEvict 生命周期](monitor/figures/request_chain_and_contention.png)
+
+图中 E3–E6 表示相互分离的 shard 锁临界区，不表示同一个 shard mutex
+从 census 持有到整轮结束。E3 中的每个 worker 仅在扫描当前 shard 时持有该
+mutex；worker 结束该 shard 的循环迭代时释放 mutex。全部 worker join 后，
+census 阶段不再持有 shard mutex；frontier scan、candidate apply 和 shrink
+在后续阶段分别重新获取当前需要处理的 shard mutex。
 
 #### 1.2.1 全时段状态
 
@@ -188,17 +193,8 @@ metadata shard mutex 为每个结果提供串行化保护。如果 `BatchEvict` 
 同 shard 读写串行化作为正确性边界继续保留。sparse-map shrink 的 W(s) 也会产生同类读锁等待，
 其语义效果限于锁顺序和 `T_shard_wait(s)`。
 
-#2508 对该前台生命周期的成本对比如下。令 `K_batch` 表示 batch 内的 key 数，
-`S_occupied` 表示这些 key 覆盖的 metadata shard 数。
-
-| 成本维度 | #2508 前 | #2508 后 | 时间成本边界 |
-|---|---|---|---|
-| shard 共享锁 acquisition | 每 key 获取一次，O(`K_batch`) | 每 occupied shard 获取一次，O(`S_occupied`) | acquisition 数由 `K_batch` 收敛到 `S_occupied`，其中 `S_occupied ≤ min(K_batch, 1,024)`。 |
-| 同 shard 内的 metadata 查找 | 多个短读锁区间 | 一个聚合读锁区间处理该 shard 的全部 batch keys | 减少 lock/unlock 成本；单个读锁 hold time 随该 shard 的 batch key 数变化。 |
-| `T_metadata` | 包含 per-key acquisition 与可能重复的同 shard 等待 | 包含 per-shard acquisition 和每 shard 最多一次聚合等待 | 优化作用于 metadata RPC 子区间；收益量由 batch size、shard fan-out 和 W(s) 重叠分布决定。 |
-| benchmark `BatchGetReplicaList` p99 | 353.019 ms | 243.121 ms | 减少 31.1%；计时从 `MasterClient::BatchGetReplicaList` 调用到返回，属于 `T_metadata` 的 RPC 子区间。 |
-| benchmark `BatchGetReplicaList` max | 2,319.008 ms | 1,602.496 ms | 减少 30.9%；结果来自 #2508 在 #2405 基础上的 controlled benchmark。 |
-| `T_payload` | 使用返回的 descriptor 执行数据传输 | 使用返回的 descriptor 执行数据传输 | 生命周期和直接成本保持一致。 |
+#2508 对该前台生命周期的实现变化、成本边界和 benchmark 结果集中在
+第 5.3 节。
 
 ### 1.5 Request-shard 因果验证设计
 
@@ -232,15 +228,9 @@ eviction 的独占 shard 占用、同 shard 前台共享锁等待、包围该等
 
 ## 2. 解决方案总览
 
-建议采用“配置确定性、淘汰可伸缩性、恢复有界性、联合验证”四条主线。当前已合入能力作为部署基线，
-社区中的完整设计作为演进目标，各阶段均设置可量化门禁。以下性能分析均使用第 1.3 节的生命周期与时间成本口径。
-
 ### 2.1 生产基线、merge timeline 与升级必要性
 
 当前生产基线为 [`v0.3.13.post1`](https://github.com/kvcache-ai/Mooncake/releases/tag/v0.3.13.post1)，
-tag commit 为 `719735896c86`，日期为 2026-08-31。
-包含关系通过 PR merge commit 与该 tag 的 Git ancestry 确认，merge date 用于表达社区时间线。
-
 Eviction 与前台查询路径的必要 PR 均已进入当前生产基线：
 
 | PR | merge date | `v0.3.13.post1` | 必要能力 | 升级必要性与当前动作 |
@@ -272,38 +262,63 @@ HA 升级范围由已启用的恢复能力决定。
 
 ### 2.2 方案主线
 
+仓库中的 `v0.3.12` 系列基线 tag 为 `v0.3.12.post1`。下图的 PR 状态使用
+tag commit 的 ancestry 校验；Issue/RFC 状态使用 2026-09-13 的上游页面状态。
+箭头表示问题、修复和版本收录的时间与对应关系。
+
 ```mermaid
 flowchart LR
-    Baseline[固定版本、配置与观测基线]
+    subgraph Foundation["v0.3.12.post1 已收录的基础修复"]
+        direction TB
+        LockProblem["Batch lookup 问题<br/>逐 key 获取 shard 锁"]
+        LockFix["PR #2405 / #2508<br/>Merged 06-17 / 06-18<br/>按 occupied shard 聚合"]
+        SSDProblem["Issue #2243 · Closed<br/>SSD 对象膨胀 eviction target"]
+        TargetFix["PR #2286 · Merged 06-24<br/>修正分母 + Phase 1 并行"]
+        LockProblem --> LockFix
+        SSDProblem --> TargetFix
+    end
 
-    Baseline --> Question[性能问题模型<br/>#2560 全量扫描与整周期快照锁]
-    Question --> Phase1[Phase 1 规模化<br/>#2286 修正分母并并行普查]
-    Phase1 --> Select[候选规模化<br/>#3118 选择性物化]
-    Select --> EvictNext[增量索引、有界批次<br/>segment 压力感知]
+    V312["v0.3.12.post1<br/>2026-07-25<br/>included: #2405 #2508 #2286"]
+    LockFix --> V312
+    TargetFix --> V312
 
-    Baseline --> HAQuestion[恢复问题模型<br/>#3561 四项核心议题]
-    HAQuestion --> Snapshot[standby 周期快照<br/>latest/fallback + suffix replay]
-    Snapshot --> Retention[compaction floor<br/>OpLog 与 snapshot GC]
-    Retention --> HAGate[fencing、promotion、客户端 RTO 门禁]
+    subgraph Remaining["v0.3.12.post1 仍存在的 BatchEvict 问题"]
+        direction TB
+        Scan["Issue #2560 · Open<br/>O(N) census + 整周期 snapshot 锁"]
+        Materialize["RFC #3124 · Open<br/>低比例仍物化完整候选"]
+        SelectFix["PR #3118 · Merged 08-03<br/>选择性物化<br/>O(N) census 保留"]
+        RSS["Issue #3452 · Open<br/>candidate 峰值 + sparse-map 容量保留"]
+        ShrinkFix["PR #3576 · Merged 08-25<br/>shrink sparse metadata maps"]
+        Scan --> Materialize --> SelectFix
+        RSS --> SelectFix
+        RSS --> ShrinkFix
+    end
 
-    Phase1 --> Joint[Eviction + HA 联合压测]
-    Select --> Joint
-    HAGate --> Joint
-    Joint --> Production[固定 commit 的生产能力清单]
+    V312 --> Scan
+    V312 --> RSS
+
+    V313["v0.3.13<br/>2026-08-26<br/>adds: #3118 #3576"]
+    SelectFix --> V313
+    ShrinkFix --> V313
+
+    V313 --> V313P1["v0.3.13.post1<br/>2026-08-31<br/>同一 BatchEvict PR 集合"]
+    V313P1 --> Status["v0.3.13.post1 状态<br/>Included: #2405 #2508 #2286 #3118 #3576<br/>Open: #2560 #3124 #3452<br/>保留: O(N) census + 整周期 snapshot 锁"]
 ```
 
-| 优先级 | 方案 | 交付结果 |
-|---|---|---|
-| P0 | 固定 `v0.3.13.post1` 的 commit、镜像和配置指纹；记录 #2286、#2405、#2508、#3118、#3154、#3168、#3576 的已验证包含关系 | 建立可复现、可审计的当前生产基线。 |
-| P1 | 以 #2560 为性能问题模型；使用 #2286 的 Phase 1 并行普查和正确分母，结合 #3118 的低比例候选物化 | 分阶段控制扫描、候选构造、CPU、临时内存和锁持有时间。 |
-| P1 | 以 #3561 为问题定义，接通 fenced writer、standby snapshot、suffix replay 和 promotion 门禁 | 建立可验证的 metadata 恢复链。 |
-| P2 | 发布 reader-safe compaction floor，并实施 OpLog 与 snapshot GC | 建立有界冷启动与有界 etcd 空间模型。 |
-| P2 | 建立 segment 级压力感知、增量候选索引和有界淘汰批次 | 改善大对象基数与异构 segment 的尾延迟。 |
-| P3 | 将 etcd 压力、durable callback、failover 和客户端重连加入统一场景 | 用端到端 SLO、RTO 和字节一致性完成生产验收。 |
+#3118 和 #3576 在
+`v0.3.12.post1` 之后合并，两者均已进入 `v0.3.13` 和 `v0.3.13.post1`。
+`v0.3.13.post1` 没有在 `v0.3.13` 基础上新增 BatchEvict 功能 PR。#3118
+降低低比例候选的物化与临时内存，#3576 回收稀疏 metadata map 容量；
+两者都不消除 #2560 和 #3124 记录的 O(N) census 与整周期
+`snapshot_mutex_` 共享锁边界。
+上游状态页面：[#2243](https://github.com/kvcache-ai/Mooncake/issues/2243)、
+[#2560](https://github.com/kvcache-ai/Mooncake/issues/2560)、
+[#3124](https://github.com/kvcache-ai/Mooncake/issues/3124) 和
+[#3452](https://github.com/kvcache-ai/Mooncake/issues/3452)。
 
 > **重点议题｜Issue #2560：从全量扫描识别 `BatchEvict` 的规模边界。**
 > #2560 的初始测量定位了串行 metadata scan；#2286 随后并行化 Phase 1，并使高比例场景的主要耗时转移到
-> Phase 2；#3118 进一步压缩低比例场景的完整候选集合。三者共同展示了瓶颈随实现版本和淘汰比例迁移的过程。
+> Phase 2；#3118 进一步压缩低比例场景的完整候选集合。
 
 > **重点议题｜Issue #3561：HA 应按完整恢复链评估。**
 > #3561 将 cold bootstrap、OpLog GC、snapshot 更新和 snapshot/OpLog 协同归纳为同一恢复闭环。
@@ -311,7 +326,7 @@ flowchart LR
 
 ## 3. 架构与结论概览
 
-### 3.1 实现事实
+### 3.1 基本实现
 
 1. Eviction 是周期性批处理机制。Master 每 10 ms 检查全局内存使用率，超过高水位或分配失败后执行
    `BatchEvict`。周期性内存下降来自该批处理模型，前台 SLO 由锁竞争、批次规模、命中率和下沉流量共同决定。
@@ -408,7 +423,7 @@ census 形成逐分片观察结果；候选身份的重新查找和最终状态�
 
 ## 5. Eviction 社区议题与解决方向
 
-### 5.1 社区议题全景
+### 5.1 主要社区议题
 
 | 议题 | 机制 | 社区处理 | 生产含义 |
 |---|---|---|---|
@@ -419,82 +434,89 @@ census 形成逐分片观察结果；候选身份的重新查找和最终状态�
 | #3452：淘汰时 Master RSS 峰值或持续偏高 | 大量完整候选对象及淘汰后稀疏 hash map | #3118 减少低比例完整候选；#3576 收缩稀疏 map | `v0.3.13.post1` 同时覆盖两项。 |
 | HA term 变化后容量统计异常 | segment 容量跨 term 重复计算或被临时 snapshot reader 释放 | #3154、#3168 修正生命周期记账 | 防止全局使用率偏低并抑制主动淘汰。 |
 
-### 5.2 重点议题：#2560 的归一化时间成本
+### 5.2 重点议题：#2560 的问题边界与后续方向
 
-> **热点｜#2560 的价值是建立可分阶段复测的问题模型。**
-> 它把总周期拆分为 metadata traversal、candidate construction、`nth_element`、实际淘汰和
-> `snapshot_mutex_` 独占等待，并明确记录测试 commit、对象规模、淘汰比例和 workload 约束。
+> **热点｜#2560 的核心是两个保留至 `v0.3.13.post1` 的结构性边界：**
+> 每轮执行 `O(N)` metadata census，并在整个 `BatchEvict` 周期持有
+> `snapshot_mutex_` 共享锁。
 
 [Issue #2560](https://github.com/kvcache-ai/Mooncake/issues/2560) 于 2026-06-22 基于
-commit `ef0312f8` 报告初始测量。该测量早于 #2286 合入，使用单 tenant、全部对象过期、pin 数量为零、
-每个对象一个可淘汰内存副本的合成 workload；第一轮已达到淘汰目标，执行在 lower-bound pass 之前完成。
+commit `ef0312f8` 报告合成 workload 测量。该 commit 早于 #2286，使用单
+tenant、100 万个全部过期且可淘汰的对象。其非 instrumentation 周期中位约为
+0.95–1.0 s；instrumented profile 中 metadata traversal 占 73%–75%；外部
+`snapshot_mutex_` 独占 waiter 的 P50 约为 1.0 s。该证据建立问题机制和
+规模趋势，不代表 `v0.3.13.post1` 的生产时延。
 
-计时结果按证据代际和计时方式分别归一化。每个计时序列各自令 `T_eviction_cycle = 100%`；
-只有同一序列中的同级区间可以相加，嵌套区间仅用于解释父区间的成本组成。
+#### 问题定义
 
-**Pre-#2286：串行 Phase 1**
+| 边界 | 机制 | 工程影响 |
+|---|---|---|
+| 候选发现 | 每轮访问全部 metadata 对象，成本为 `O(N)`，与最终目标数 `K` 不成比例。 | 对象基数增长时，即使淘汰比例较低，census CPU 和 shard 访问量仍线性增长。 |
+| 快照锁生命周期 | `BatchEvict` 在 census、候选选择、应用和 cleanup 期间持有 `snapshot_mutex_` 共享锁。 | 需要独占快照锁的操作等待整轮结束；等待上界由完整周期而非单个 shard 临界区决定。 |
+| 候选应用 | Phase 2 逐个重新查找、校验和处理候选。 | 高 target 或回调处理能力受限时，串行应用可以主导周期，并间接延长快照锁等待。 |
 
-| 计时序列 | 层级 | 计时区间 | 结果 | 归一化关系 |
-|---|---:|---|---:|---|
-| Non-instrumented | 0 | `T_eviction_cycle` | 中位约 0.95–1.0 s；5 次范围 0.93–1.2 s | 该序列的 100%；用于报告实际 wall time。 |
-| Instrumented | 0 | `T_eviction_cycle` | 100% | 独立归一化基准；绝对时间受 instrumentation overhead 影响。 |
-| Instrumented | 1 | metadata traversal | 73%–75% | 周期内部的父区间。 |
-| Instrumented | 2 | candidate vector collection | 28%–31% | 已包含在 metadata traversal 中。 |
-| Instrumented | 1 | 全部 `nth_element` | 约 0.1% | 周期内部的同级区间。 |
-| Instrumented | 1 | `try_evict_group_or_object` | <0.5% | 周期内部的同级区间。 |
+这些边界与 metadata shard mutex 的生命周期不同。census worker 在每个
+shard 循环迭代结束时释放当前 shard mutex；保留到整轮结束的是外层
+`snapshot_mutex_` 共享锁。
 
-两套计时序列分别用于 wall time 和成本 profile。归一化 profile 将主要成本定位在 metadata
-traversal；candidate collection 是其中的嵌套成本，不参与同级求和。
+#### 已有 PR 的作用与保留边界
 
-**Post-#2286：并行 Phase 1、高比例 target**
+| PR | 已解决范围 | 对 #2560 保留问题的影响 |
+|---|---|---|
+| #2286 | 修正 SSD 场景的 target 分母，并行化 Phase 1 census。 | 降低典型 wall time，但每轮仍执行 `O(N)` census，外层快照锁范围不变。详细 A/B 结果见第 5.4 节。 |
+| #3118 | 低比例路径仅为 target frontier 和 reserve 物化完整候选。 | 减少候选内存和后续工作集，但保留初始 `O(N)` census，选择性路径还可能再扫描一次。详细结果见第 5.5 节。 |
+| #2508 | 将 `BatchGetReplicaList` 从逐 key 加锁改为按 occupied shard 聚合。 | 减少前台共享锁 acquisition 和重复竞争机会，不改变 `BatchEvict` 的 `O(N)` census 或快照锁范围。详见第 5.3 节。 |
+| #3576 | 淘汰后收缩稀疏 metadata map。 | 减少长期 RSS/PSS 保留，不改变候选发现复杂度或外层锁生命周期。 |
 
-| 层级 | 计时区间 | 绝对时间 | 归一化占比 | 计入 100% 的方式 |
-|---|---|---:|---:|---|
-| 0 | `T_eviction_cycle` | 约 1.5 s | 100% | 整轮基准。 |
-| 1 | `T_phase1`：并行 census | 约 35 ms | 2.3% | 周期内部的同级区间。 |
-| 1 | `T_phase2`：串行候选应用 | 约 1.24 s | 82.2% | 周期内部的同级区间。 |
-| 1 | 其余管理与清理区间 | 约 0.23 s | 15.5% | 由 100% 减去已报告的两个 phase，作为归一化余量。 |
+#### 可能解决方向
 
-归一化结果显示，#2286 之后该高比例 workload 的主导成本由 Phase 1 转移到 Phase 2。Pre/post
-绝对时间对应不同 commit 和测量设置，用于定位各自的瓶颈；#2286 的 A/B 收益由第 5.3 节的
-同 workload 对照给出。
+| 方向 | 机制 | 主要代价 | 验收条件 |
+|---|---|---|---|
+| per-shard lease-timeout index 或 coarse time buckets | 维护按过期时间可提取的候选结构，将每轮 `O(N)` 全量扫描转换为与 `K` 和 stale entries 相关的有界提取。 | lease refresh、pin、replica state 和 erase 路径增加索引维护；需要处理 stale entry 和恢复一致性。 | 同时记录 candidate discovery wall time、索引内存、前台更新延迟、stale ratio 和 refill 次数；保持锁内 revalidation。 |
+| 有界淘汰批次 | 将一轮大 target 拆分为有上限的批次，在批次边界释放并重新获取 `snapshot_mutex_`。 | 快照可见性、目标进度、公平性和失败恢复需要新的批次语义。 | 独占 waiter P95/P99 受批次上限约束；actual target、oldest-first 选择和重新校验语义保持。 |
+| 按 shard 组织 Phase 2 | 对不同 shard 的普通候选并行应用，同 shard 内保持顺序。 | 跨 shard group 需要单一执行权；持久化和 offload 处理能力构成并行度上限。 | 比较 Phase 2 wall time、单 shard 写锁 wait/hold、实际淘汰比例和 group 语义；不增加同 shard 并发变更。 |
 
-`T_snapshot_unique_wait` 是 `T_eviction_cycle` 外部的等待区间，单独报告：
+优先级由实测成本决定：候选发现主导时优先索引化，外部独占
+waiter 超出 SLO 时优先有界批次，Phase 2 主导时评估按 shard 并行。
+三种方案均使用稳定 `(shard, tenant, key)` identity 传递候选，并以 shard
+锁内 revalidation 作为最终决策边界。
 
-| 证据代际 | P50 | P95 | Max | 解释 |
-|---|---:|---:|---:|---|
-| Pre-#2286 独立 probe | 约 1.00 s | 约 1.21 s | 约 1.36 s | waiter 与整轮快照共享锁重叠。 |
-| Post-#2286 独立 probe | 约 1.44 s | — | — | P50 接近对应的整轮共享锁持有期。 |
+### 5.3 重要 PR：#2508 前台按 shard 聚合
 
-Issue 同时提出 per-shard lease-timeout index 或 coarse time buckets，将候选发现从每轮全量扫描
-转换为有界提取。当前优化顺序由归一化 profile 决定：高比例场景优先处理 Phase 2，低比例场景
-由 #3118 控制完整候选物化量。
+> **热点｜#2508 直接减少 `BatchGetReplicaList` 与 `BatchEvict` 交叉时的
+> shard 共享锁 acquisition 和重复竞争机会。**
+> 前台查询从每 key 获取共享锁改为每 occupied shard 获取一次；
+> `BatchEvict` 的独占锁范围和同 shard 串行化语义保持不变。
 
-#### Phase 1 候选发现方向
+#2508 在 #2405 的 shard-grouping 方法基础上，为
+`MasterService::BatchGetReplicaList` 增加 batch-aware 路径。该路径先按 metadata
+shard 组织 keys，再在一个 `MetadataShardAccessorRO` 临界区内处理同 shard
+的全部 keys，同时保持原始响应顺序、tenant 隔离、lease grant 和
+promotion-on-hit 语义。
 
-#2286 已使 Phase 1 成为较小的周期子区间；#3118 进一步控制低比例场景的完整候选物化量。
-per-shard lease-timeout index、coarse time buckets 或 lazy generation 仍可将 O(N)
-census 转换为有界候选提取，同时把索引维护加入 lease refresh、pin、replica state 和 erase 路径。
-该方向适合作为规模复杂度优化，由更大对象基数和低淘汰比例的 profile 确定实施优先级。
+令 `K_batch` 表示 batch 内的 key 数，`S_occupied` 表示这些 key 覆盖的
+metadata shard 数。#2508 的实现事实和成本效果如下。
 
-索引方案继续使用稳定 identity 传递候选，并以 shard 锁内 revalidation 作为最终决策边界。评估指标集中于
-census wall time、索引内存、前台更新延迟、stale entry 比例和 refill 次数。
+| 成本维度 | #2508 前 | #2508 后 | 时间成本边界 |
+|---|---|---|---|
+| shard 共享锁 acquisition | 每 key 获取一次，O(`K_batch`) | 每 occupied shard 获取一次，O(`S_occupied`) | acquisition 数由 `K_batch` 收敛到 `S_occupied`，其中 `S_occupied ≤ min(K_batch, 1,024)`。 |
+| 同 shard 内的 metadata 查找 | 多个短读锁区间 | 一个聚合读锁区间处理该 shard 的全部 batch keys | 减少 lock/unlock 成本；单个读锁 hold time 随该 shard 的 batch key 数变化。 |
+| `T_metadata` | 包含 per-key acquisition 与可能重复的同 shard 等待 | 包含 per-shard acquisition 和每 shard 最多一次聚合等待 | 优化作用于 metadata RPC 子区间；收益量由 batch size、shard fan-out 和 W(s) 重叠分布决定。 |
+| benchmark `BatchGetReplicaList` p99 | 353.019 ms | 243.121 ms | 减少 31.1%；计时从 `MasterClient::BatchGetReplicaList` 调用到返回，属于 `T_metadata` 的 RPC 子区间。 |
+| benchmark `BatchGetReplicaList` max | 2,319.008 ms | 1,602.496 ms | 减少 30.9%；结果来自 #2508 在 #2405 基础上的 controlled benchmark。 |
+| `T_payload` | 使用返回的 descriptor 执行数据传输 | 使用返回的 descriptor 执行数据传输 | 生命周期和直接成本保持一致。 |
 
-#### Phase 2 串行执行方向
+对 `BatchEvict` 竞争的派生结论是：一个 batch 在同 shard 上的重复锁请求和
+重复等待机会被合并为一个聚合临界区。当 `R(s)` 与 `W(s)` 重叠时，
+该聚合读仍需要等待当前独占区间结束。因此，#2508 降低前台
+`T_metadata` 中的锁 acquisition 和重复竞争成本，但不消除同 shard
+读写互斥这一正确性边界。
 
-post-#2286 的归一化 profile 将 Phase 2 定位为主要周期成本。当前候选循环逐个调用
-`try_evict_group_or_object`；每次调用获取候选 shard 写锁，完成 key lookup、资格复核和淘汰。
-单个 shard 锁最大持有时间约为 2–3 ms，表明不同 shard 之间具备并行执行空间。
+#2508 优先作用于 latency-critical 的前台 metadata RPC；#2286 随后作用于
+后台淘汰的 target population 和 Phase 1 census wall time。该作用顺序是本报告
+将 #2508 列于 #2286 之前的原因。
 
-一个可行方向是按 shard 组织候选，使位于不同 shard 的普通对象并行执行，同一 shard 内保持顺序处理。
-该结构可以利用现有分片锁的独立性，并保留 key lookup 和锁内 revalidation。group 淘汰跨越多个 shard，
-适合采用独立调度域和单一 group 执行权，以保持共享 deadline 与成员淘汰语义。
-
-另一个方向是将 Phase 2 划分为有界批次，并在批次边界调整 `snapshot_mutex_` 的持有范围，从而缩短
-独占 waiter 的连续等待时间。HA OpLog、durable callback 和 SSD offload 的处理能力共同构成并行度上限。
-这两个方向分别作用于 Phase 2 wall time 和外层锁等待周期，也可以组合评估。
-
-### 5.3 关联 PR：#2286 的 Phase 1 并行重写
+### 5.4 关联 PR：#2286 的 Phase 1 并行重写
 
 > **热点｜#2286 同时修正工作量定义与执行结构。**
 > 语义层把目标分母收敛到可释放 DRAM 的对象；执行层把全量 shard census 分配给最多 16 个 worker。
@@ -537,7 +559,7 @@ flowchart TD
 - worker-local 统计减少共享聚合路径上的同步；
 - 后续优化可以在同一正确分母上分别处理候选内存和 Phase 2 时延。
 
-### 5.4 关联 PR：#3118 的低比例候选优化
+### 5.5 关联 PR：#3118 的低比例候选优化
 
 > **热点｜#3118 优化“复制多少完整候选”，#2286 优化“如何完成普查”。**
 > #3118 的 cutoff 与 `collect_candidates` 位于 Phase 1；它缩小完整候选的物化量和后续工作集，
@@ -600,7 +622,7 @@ O(N) 初始 census，逐 shard 获取写锁，保存 O(M) 个 deadline
 高比例 pre-bypass 使用 `1,024 + K` 次 accessor acquisition，与 baseline 一致。因此，
 额外 frontier scan 的成本和完整 identity materialization 的收益都集中在低淘汰比例。
 
-### 5.5 保留的结构性边界与相关议题
+### 5.6 保留的结构性边界与相关议题
 
 #### #3124：O(N) 普查和整周期快照锁
 
@@ -632,7 +654,7 @@ O(N) 初始 census，逐 shard 获取写锁，保存 O(M) 个 deadline
 显式使用字符串 `"false"` 时，Python `bool(non_empty_string)` 会将其解释为 `true`。
 配置项省略时的默认关闭行为和 JSON 原生布尔值行为保持正常。
 
-### 5.6 Eviction 方案讨论
+### 5.7 Eviction 方案讨论
 
 - 单纯降低 `eviction_ratio` 会减小单轮峰值，但可能提高 O(N) census 的执行频率。
 - 单纯降低 `eviction_high_watermark_ratio` 可提前回收，但会减少有效缓存容量并影响命中率。
@@ -871,7 +893,7 @@ HA term 切换、snapshot reader 和 segment 生命周期中的容量重复计�
 
 ### P1：建立正确性门禁
 
-1. 对当前基线中的 #2286、#2405、#2508、#3118、#3154、#3168、#3576 执行第 2.1 节所列行为验收。
+1. 对当前基线中的 #2405、#2508、#2286、#3118、#3154、#3168、#3576 执行第 2.1 节所列行为验收。
 2. HA 构建必须具备 restore fail-closed、producer-view fencing、ReplicaID 保留和有界 promotion restore。
 3. 对 `PutEnd`、remove 和 eviction 分别验证 admission 失败、持久化失败与 callback 延迟行为。
 4. 为 NoF、LOCAL_DISK、DFS 分别验证 descriptor 与物理分配所有权。

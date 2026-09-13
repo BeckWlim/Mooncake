@@ -206,15 +206,13 @@ being processed in the current loop iteration.
 | 12 | `TransferFuture::get` waits for completion; checksum and lease checks follow | `-` | `-` | Yes, until completion |
 | 13 | Results return through RealClient; successful values report transferred byte counts | `-` | `-` | No |
 
-For a batch spanning several shards, phases 4 through 8 repeat once for each
-occupied shard. The implementation holds at most one metadata shard lock at a
-time. Shared readers of that shard may proceed concurrently; an exclusive
-metadata mutation on the same shard must wait. Neither the snapshot lock nor a
-metadata shard lock is held during replica selection, transfer submission,
-RDMA/TCP/local-copy execution, checksum verification, or result conversion.
-If a non-MEMORY path is eligible for promotion-on-hit, its post-read hook may
-acquire a fresh exclusive metadata accessor after the read-only accessor has
-released the shard lock; that branch is outside the MEMORY baseline above.
+For a batch spanning several shards, phases 4 through 8 repeat once for each occupied shard. 
+The implementation holds at most one metadata shard lock at a time. 
+Shared readers of that shard may proceed concurrently; an exclusive metadata mutation on the same shard must wait. 
+
+Neither the snapshot lock nor a metadata shard lock is held during replica selection, transfer submission, RDMA/TCP/local-copy execution, checksum verification, or result conversion. 
+If a non-MEMORY path is eligible for promotion-on-hit, its post-read hook may acquire a fresh exclusive metadata accessor after the read-only accessor has released the shard lock; 
+that branch is outside the MEMORY baseline above.
 
 The outer `RealClient::batch_get_into_multi_buffers()` wrapper starts its
 operation timer before entering this baseline and observes the result after the
